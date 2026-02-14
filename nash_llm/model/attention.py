@@ -5,6 +5,8 @@ from nash_llm.config import ModelConfig
 
 
 class MultiHeadAttention(nn.Module):
+    mask: torch.Tensor
+
     def __init__(self, config: ModelConfig):
         super().__init__()
         if config.d_model % config.n_heads != 0:

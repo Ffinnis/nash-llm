@@ -50,12 +50,27 @@ class NashConfig:
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
 
 
+def _resolve_short_key(cfg: NashConfig, key: str) -> tuple[str, str]:
+    """Resolve a short key like 'max_steps' to 'train.max_steps' by searching all sections."""
+    sections = {"model": cfg.model, "train": cfg.train, "data": cfg.data, "metrics": cfg.metrics}
+    matches = [(name, key) for name, section in sections.items() if hasattr(section, key)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        options = [f"{m[0]}.{key}" for m in matches]
+        raise ValueError(f"Ambiguous key '{key}', found in: {', '.join(options)}")
+    raise ValueError(f"Unknown config field: {key}")
+
+
 def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
     for key, value in overrides.items():
         parts = key.split(".")
-        if len(parts) != 2:
-            raise ValueError(f"Override key must be 'section.field', got: {key}")
-        section_name, field_name = parts
+        if len(parts) == 1:
+            section_name, field_name = _resolve_short_key(cfg, key)
+        elif len(parts) == 2:
+            section_name, field_name = parts
+        else:
+            raise ValueError(f"Override key must be 'field' or 'section.field', got: {key}")
         section = getattr(cfg, section_name, None)
         if section is None:
             raise ValueError(f"Unknown config section: {section_name}")

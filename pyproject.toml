@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nash-llm"
+version = "0.1.0"
+description = "Research LLM framework for pretraining and fine-tuning transformers"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "tiktoken",
+    "wandb",
+    "numpy",
+    "matplotlib",
+    "datasets",
+    "pyyaml",
+]
+
+[dependency-groups]
+dev = ["pytest", "pytest-cov"]
+
+[tool.setuptools.packages.find]
+include = ["nash_llm*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

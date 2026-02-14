@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.venv/
+datasets/
+checkpoints/
+*.bin
+wandb/
+plots/
+.DS_Store
+uv.lock

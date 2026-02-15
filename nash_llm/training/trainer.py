@@ -212,8 +212,8 @@ class Trainer:
 
             if step > 0 and step % cfg.eval_interval == 0:
                 self.model.eval()
-                val_loss = compute_val_loss(self.model, self.val_loader, max_batches=20, amp_dtype=self.amp_dtype)
-                accuracy = compute_accuracy(self.model, self.val_loader, max_batches=20, amp_dtype=self.amp_dtype)
+                val_loss = compute_val_loss(self.model, self.val_loader, max_batches=20)
+                accuracy = compute_accuracy(self.model, self.val_loader, max_batches=20)
                 perplexity = math.exp(val_loss) if val_loss < 20 else float("inf")
 
                 eval_metrics = {"val_loss": val_loss, "accuracy": accuracy, "perplexity": perplexity}

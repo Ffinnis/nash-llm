@@ -78,6 +78,9 @@ class Trainer:
         if resume_from:
             self._resume(resume_from)
 
+        if config.train.compile and torch.cuda.is_available():
+            self.model = torch.compile(self.model)
+
     def _resume(self, path: str):
         from nash_llm.training.checkpoint import load_checkpoint
         ckpt = load_checkpoint(path, self.model, self.optimizer)

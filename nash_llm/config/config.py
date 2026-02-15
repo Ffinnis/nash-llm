@@ -25,6 +25,7 @@ class TrainConfig:
     eval_interval: int = 500
     checkpoint_interval: int = 5000
     grad_accum_steps: int = 1
+    compile: bool = False
 
 
 @dataclass

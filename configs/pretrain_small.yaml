@@ -18,6 +18,7 @@ train:
   eval_interval: 10
   checkpoint_interval: 20
   grad_accum_steps: 32
+  compile: true
 
 data:
   dataset: tinystories

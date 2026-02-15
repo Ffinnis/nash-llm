@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import inspect
 
 
 def configure_optimizer(model: nn.Module, lr: float, weight_decay: float, betas: tuple[float, float] = (0.9, 0.95)) -> torch.optim.AdamW:
@@ -16,4 +17,7 @@ def configure_optimizer(model: nn.Module, lr: float, weight_decay: float, betas:
         {"params": decay_params, "weight_decay": weight_decay},
         {"params": no_decay_params, "weight_decay": 0.0},
     ]
-    return torch.optim.AdamW(param_groups, lr=lr, betas=betas)
+    adamw_kwargs = {"lr": lr, "betas": betas}
+    if torch.cuda.is_available() and "fused" in inspect.signature(torch.optim.AdamW).parameters:
+        adamw_kwargs["fused"] = True
+    return torch.optim.AdamW(param_groups, **adamw_kwargs)

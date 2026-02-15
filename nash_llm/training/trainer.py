@@ -145,8 +145,8 @@ class Trainer:
             step_started_at = time.perf_counter()
             lr = self._set_lr(step)
 
-            self.optimizer.zero_grad()
-            accum_loss = 0.0
+            self.optimizer.zero_grad(set_to_none=True)
+            accum_loss = torch.zeros((), device=self.device)
             tokens_processed = 0
             remaining_token_budget = cfg.max_tokens - total_tokens_processed if cfg.max_tokens > 0 else 0
             micro_steps_target = cfg.grad_accum_steps
@@ -172,7 +172,7 @@ class Trainer:
                     loss = loss / micro_steps_target
 
                 self.scaler.scale(loss).backward()
-                accum_loss += loss.item()
+                accum_loss += loss.detach()
 
             if cfg.grad_clip > 0:
                 self.scaler.unscale_(self.optimizer)
@@ -185,11 +185,12 @@ class Trainer:
             elapsed = max(time.perf_counter() - step_started_at, 1e-8)
             tokens_per_sec = tokens_processed / elapsed
             progress_metrics = self._build_progress_metrics(step, tokens_per_sec, total_tokens_processed)
+            train_loss = float(accum_loss.item())
 
-            record = {"step": step, "train_loss": accum_loss, "lr": lr, **progress_metrics}
+            record = {"step": step, "train_loss": train_loss, "lr": lr, **progress_metrics}
 
             if step % self.config.metrics.log_interval == 0:
-                train_metrics = {"train_loss": accum_loss, "lr": lr, **progress_metrics}
+                train_metrics = {"train_loss": train_loss, "lr": lr, **progress_metrics}
                 self.logger.log(train_metrics, step=step)
                 print(self._format_progress_log(train_metrics))
 

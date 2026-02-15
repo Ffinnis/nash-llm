@@ -1,6 +1,7 @@
 import os
 import math
 import time
+from dataclasses import asdict
 import torch
 from torch.utils.data import DataLoader
 from typing import Any
@@ -66,7 +67,7 @@ class Trainer:
         self.train_loader = DataLoader(self.train_dataset, **train_loader_kwargs)
         self.val_loader = DataLoader(self.val_dataset, **val_loader_kwargs)
 
-        self.logger = MetricsLogger(config.metrics, run_config=None)
+        self.logger = MetricsLogger(config.metrics, run_config=asdict(config))
 
         self.use_amp = self.device.type == "cuda"
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)

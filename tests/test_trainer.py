@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import json
 import glob
+from unittest.mock import patch
 from nash_llm.training.trainer import Trainer
 from nash_llm.config import NashConfig, ModelConfig, TrainConfig, DataConfig, MetricsConfig
 
@@ -83,3 +84,13 @@ class TestTrainer:
         assert len(history) < cfg.train.max_steps
         assert history[-1]["tokens_seen"] >= cfg.train.max_tokens
         assert history[-1]["progress_pct"] == 100.0
+
+    @patch("nash_llm.training.trainer.MetricsLogger")
+    def test_passes_full_config_to_logger(self, mock_logger, tmp_path):
+        cfg = self._make_config(tmp_path)
+        Trainer(cfg, checkpoint_dir=str(tmp_path / "checkpoints"))
+
+        assert mock_logger.call_count == 1
+        _, kwargs = mock_logger.call_args
+        assert "run_config" in kwargs
+        assert kwargs["run_config"]["model"]["d_model"] == cfg.model.d_model

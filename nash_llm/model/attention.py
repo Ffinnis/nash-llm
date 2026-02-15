@@ -1,6 +1,7 @@
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from nash_llm.config import ModelConfig
 
 
@@ -17,6 +18,7 @@ class MultiHeadAttention(nn.Module):
 
         self.qkv = nn.Linear(config.d_model, 3 * config.d_model)
         self.out_proj = nn.Linear(config.d_model, config.d_model)
+        self.dropout_p = config.dropout
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
 
@@ -33,12 +35,22 @@ class MultiHeadAttention(nn.Module):
         k = k.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
 
-        scale = math.sqrt(self.head_dim)
-        attn = (q @ k.transpose(-2, -1)) / scale
-        attn = attn.masked_fill(self.mask[:, :, :T, :T] == 0, float("-inf"))
-        attn = torch.softmax(attn, dim=-1)
-        attn = self.attn_dropout(attn)
+        if hasattr(F, "scaled_dot_product_attention"):
+            out = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=None,
+                dropout_p=self.dropout_p if self.training else 0.0,
+                is_causal=True,
+            )
+        else:
+            scale = math.sqrt(self.head_dim)
+            attn = (q @ k.transpose(-2, -1)) / scale
+            attn = attn.masked_fill(self.mask[:, :, :T, :T] == 0, float("-inf"))
+            attn = torch.softmax(attn, dim=-1)
+            attn = self.attn_dropout(attn)
+            out = attn @ v
 
-        out = attn @ v
         out = out.transpose(1, 2).contiguous().view(B, T, C)
         return self.resid_dropout(self.out_proj(out))

@@ -27,8 +27,12 @@ uv run python scripts/prepare_data.py --dataset openwebtext_100M
 uv run python scripts/prepare_data.py --dataset fineweb_1B
 
 # Train
+# pretrain_small.yaml: 100M model on 10M-token dataset (token-budgeted)
 uv run python scripts/train.py --config configs/pretrain_small.yaml
+# pretrain_100m.yaml: same model on 100M-token dataset (token-budgeted)
 uv run python scripts/train.py --config configs/pretrain_100m.yaml
+# pretrain_debug.yaml: tiny debug preset
+uv run python scripts/train.py --config configs/pretrain_debug.yaml
 
 # CLI overrides (short keys auto-resolve to their section)
 uv run python scripts/train.py --config configs/pretrain_small.yaml --max_steps 50 --learning_rate 1e-3

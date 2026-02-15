@@ -28,6 +28,7 @@ class TestTrainConfig:
         assert cfg.learning_rate == 3e-4
         assert cfg.weight_decay == 0.1
         assert cfg.max_steps == 100_000
+        assert cfg.max_tokens == 0
         assert cfg.warmup_steps == 2000
         assert cfg.grad_clip == 1.0
         assert cfg.eval_interval == 500

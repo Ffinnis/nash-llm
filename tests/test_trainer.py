@@ -67,3 +67,19 @@ class TestTrainer:
         assert history[-1]["steps_remaining"] == 0
         assert history[-1]["progress_pct"] == 100.0
         assert all(h["tokens_per_sec"] > 0 for h in history)
+
+    def test_stops_by_max_tokens(self, tmp_path):
+        cfg = self._make_config(tmp_path)
+        cfg.train.max_steps = 100
+        cfg.train.max_tokens = 500
+        cfg.train.batch_size = 2
+        cfg.train.grad_accum_steps = 1
+        cfg.model.max_seq_len = 32
+        ckpt_dir = str(tmp_path / "checkpoints")
+
+        trainer = Trainer(cfg, checkpoint_dir=ckpt_dir)
+        history = trainer.train()
+
+        assert len(history) < cfg.train.max_steps
+        assert history[-1]["tokens_seen"] >= cfg.train.max_tokens
+        assert history[-1]["progress_pct"] == 100.0

@@ -19,6 +19,7 @@ class TrainConfig:
     learning_rate: float = 3e-4
     weight_decay: float = 0.1
     max_steps: int = 100_000
+    max_tokens: int = 0
     warmup_steps: int = 2000
     grad_clip: float = 1.0
     eval_interval: int = 500

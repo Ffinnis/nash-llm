@@ -17,6 +17,34 @@ from nash_llm.config import NashConfig
 
 
 class Trainer:
+    @staticmethod
+    def _cuda_supports_bf16() -> bool:
+        is_bf16_supported = getattr(torch.cuda, "is_bf16_supported", None)
+        if callable(is_bf16_supported):
+            return bool(is_bf16_supported())
+        major, _ = torch.cuda.get_device_capability()
+        return major >= 8
+
+    @classmethod
+    def _resolve_precision_mode(
+        cls,
+        device: torch.device,
+        precision: str,
+    ) -> tuple[bool, torch.dtype | None, bool]:
+        precision = precision.lower()
+        if precision not in {"fp16", "bf16"}:
+            raise ValueError(f"Unsupported precision '{precision}'. Expected one of: bf16, fp16")
+        if device.type != "cuda":
+            return False, None, False
+        if precision == "fp16":
+            return True, torch.float16, True
+        if not cls._cuda_supports_bf16():
+            raise RuntimeError(
+                "train.precision=bf16 requires CUDA bf16 support on this GPU. "
+                "Use train.precision=fp16 on unsupported hardware."
+            )
+        return True, torch.bfloat16, False
+
     def __init__(self, config: NashConfig, checkpoint_dir: str = "checkpoints", resume_from: str | None = None):
         self.config = config
         self.checkpoint_dir = checkpoint_dir
@@ -71,8 +99,11 @@ class Trainer:
 
         self.logger = MetricsLogger(config.metrics, run_config=asdict(config))
 
-        self.use_amp = self.device.type == "cuda"
-        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
+        self.use_amp, self.amp_dtype, self.use_grad_scaler = self._resolve_precision_mode(
+            self.device,
+            config.train.precision,
+        )
+        self.scaler = torch.amp.GradScaler("cuda", enabled=True) if self.use_grad_scaler else None
 
         self.start_step = 0
         self.best_val_loss = float("inf")
@@ -173,19 +204,35 @@ class Trainer:
                 y = y.to(self.device, non_blocking=self.pin_memory)
                 tokens_processed += int(x.numel())
 
-                with torch.amp.autocast("cuda", enabled=self.use_amp):
+                autocast_kwargs: dict[str, Any] = {
+                    "device_type": self.device.type,
+                    "enabled": self.use_amp,
+                }
+                if self.amp_dtype is not None:
+                    autocast_kwargs["dtype"] = self.amp_dtype
+                with torch.amp.autocast(**autocast_kwargs):
                     _, loss = self.model(x, y)
                     loss = loss / micro_steps_target
 
-                self.scaler.scale(loss).backward()
+                if self.use_grad_scaler:
+                    assert self.scaler is not None
+                    self.scaler.scale(loss).backward()
+                else:
+                    loss.backward()
                 accum_loss += loss.detach()
 
             if cfg.grad_clip > 0:
-                self.scaler.unscale_(self.optimizer)
+                if self.use_grad_scaler:
+                    assert self.scaler is not None
+                    self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.grad_clip)
 
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+            if self.use_grad_scaler:
+                assert self.scaler is not None
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer.step()
 
             total_tokens_processed += tokens_processed
             elapsed = max(time.perf_counter() - step_started_at, 1e-8)

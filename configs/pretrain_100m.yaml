@@ -19,6 +19,7 @@ train:
   checkpoint_interval: 200
   grad_accum_steps: 8
   compile: true
+  precision: bf16
 
 data:
   dataset: openwebtext

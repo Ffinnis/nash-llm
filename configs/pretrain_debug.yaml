@@ -17,6 +17,7 @@ train:
   eval_interval: 100
   checkpoint_interval: 500
   grad_accum_steps: 1
+  precision: bf16
 
 data:
   dataset: tinystories

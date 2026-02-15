@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-nash-llm is a research LLM framework for pretraining and fine-tuning GPT-style transformers, inspired by nanoGPT. It targets single NVIDIA GPU (CUDA) training with mixed precision (float16).
+nash-llm is a research LLM framework for pretraining and fine-tuning GPT-style transformers, inspired by nanoGPT. It targets single NVIDIA GPU (CUDA) training with configurable mixed precision (`bf16`/`fp16`, default `bf16`).
 
 ## Commands
 
@@ -66,7 +66,7 @@ Decoder-only GPT with pre-LayerNorm, GELU activation, and weight tying (`lm_head
 
 ### Training
 
-`Trainer` orchestrates the loop: AMP autocast, gradient accumulation (`grad_accum_steps`), cosine LR schedule with linear warmup, gradient clipping, periodic eval (val_loss, accuracy, perplexity), checkpointing, and wandb logging.
+`Trainer` orchestrates the loop: AMP autocast (`bf16`/`fp16`), gradient accumulation (`grad_accum_steps`), cosine LR schedule with linear warmup, gradient clipping, periodic eval (val_loss, accuracy, perplexity), checkpointing, and wandb logging.
 
 `configure_optimizer()` splits params into decay (2D+ tensors) and no-decay (biases, layernorm) groups for AdamW.
 

@@ -26,6 +26,7 @@ class TrainConfig:
     checkpoint_interval: int = 5000
     grad_accum_steps: int = 1
     compile: bool = False
+    precision: str = "bf16"
 
 
 @dataclass
@@ -64,6 +65,15 @@ def _resolve_short_key(cfg: NashConfig, key: str) -> tuple[str, str]:
     raise ValueError(f"Unknown config field: {key}")
 
 
+def _validate_train_precision(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"Unsupported train.precision '{value}'. Expected one of: bf16, fp16")
+    precision = value.lower()
+    if precision not in {"fp16", "bf16"}:
+        raise ValueError(f"Unsupported train.precision '{value}'. Expected one of: bf16, fp16")
+    return precision
+
+
 def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
     for key, value in overrides.items():
         parts = key.split(".")
@@ -85,6 +95,8 @@ def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
             parsed = value.split(",")
         else:
             parsed = field_type(value)
+        if section_name == "train" and field_name == "precision":
+            parsed = _validate_train_precision(parsed)
         setattr(section, field_name, parsed)
     return cfg
 
@@ -98,6 +110,7 @@ def load_config(config_path: str | None = None, overrides: dict[str, str] | None
             cfg.model = ModelConfig(**{**vars(cfg.model), **raw["model"]})
         if "train" in raw:
             cfg.train = TrainConfig(**{**vars(cfg.train), **raw["train"]})
+            cfg.train.precision = _validate_train_precision(cfg.train.precision)
         if "data" in raw:
             cfg.data = DataConfig(**{**vars(cfg.data), **raw["data"]})
         if "metrics" in raw:

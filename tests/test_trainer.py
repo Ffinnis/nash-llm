@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import json
 import glob
+import pytest
 from unittest.mock import patch
 from nash_llm.training.trainer import Trainer
 from nash_llm.config import NashConfig, ModelConfig, TrainConfig, DataConfig, MetricsConfig
@@ -94,3 +95,27 @@ class TestTrainer:
         _, kwargs = mock_logger.call_args
         assert "run_config" in kwargs
         assert kwargs["run_config"]["model"]["d_model"] == cfg.model.d_model
+
+    def test_resolve_precision_mode_fp16_enables_scaler(self):
+        use_amp, amp_dtype, use_grad_scaler = Trainer._resolve_precision_mode(torch.device("cuda"), "fp16")
+        assert use_amp is True
+        assert amp_dtype == torch.float16
+        assert use_grad_scaler is True
+
+    def test_resolve_precision_mode_bf16_disables_scaler(self):
+        with patch.object(Trainer, "_cuda_supports_bf16", return_value=True):
+            use_amp, amp_dtype, use_grad_scaler = Trainer._resolve_precision_mode(torch.device("cuda"), "bf16")
+        assert use_amp is True
+        assert amp_dtype == torch.bfloat16
+        assert use_grad_scaler is False
+
+    def test_resolve_precision_mode_bf16_unsupported_raises(self):
+        with patch.object(Trainer, "_cuda_supports_bf16", return_value=False):
+            with pytest.raises(RuntimeError, match="train.precision=bf16"):
+                Trainer._resolve_precision_mode(torch.device("cuda"), "bf16")
+
+    def test_resolve_precision_mode_cpu_disables_amp(self):
+        use_amp, amp_dtype, use_grad_scaler = Trainer._resolve_precision_mode(torch.device("cpu"), "bf16")
+        assert use_amp is False
+        assert amp_dtype is None
+        assert use_grad_scaler is False

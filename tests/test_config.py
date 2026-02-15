@@ -34,6 +34,7 @@ class TestTrainConfig:
         assert cfg.eval_interval == 500
         assert cfg.checkpoint_interval == 5000
         assert cfg.grad_accum_steps == 1
+        assert cfg.precision == "bf16"
 
     def test_custom(self):
         cfg = TrainConfig(learning_rate=1e-4, batch_size=32)
@@ -71,7 +72,7 @@ class TestLoadConfig:
     def test_load_from_yaml(self, tmp_path):
         yaml_content = {
             "model": {"n_layers": 6, "d_model": 512},
-            "train": {"learning_rate": 1e-4},
+            "train": {"learning_rate": 1e-4, "precision": "fp16"},
         }
         yaml_path = tmp_path / "test.yaml"
         yaml_path.write_text(yaml.dump(yaml_content))
@@ -80,6 +81,7 @@ class TestLoadConfig:
         assert cfg.model.n_layers == 6
         assert cfg.model.d_model == 512
         assert cfg.train.learning_rate == 1e-4
+        assert cfg.train.precision == "fp16"
         assert cfg.model.n_heads == 12
         assert cfg.train.batch_size == 64
 
@@ -88,13 +90,26 @@ class TestLoadConfig:
         yaml_path = tmp_path / "test.yaml"
         yaml_path.write_text(yaml.dump(yaml_content))
 
-        overrides = {"model.n_layers": "12", "train.learning_rate": "1e-5"}
+        overrides = {"model.n_layers": "12", "train.learning_rate": "1e-5", "train.precision": "fp16"}
         cfg = load_config(str(yaml_path), overrides=overrides)
         assert cfg.model.n_layers == 12
         assert cfg.train.learning_rate == 1e-5
+        assert cfg.train.precision == "fp16"
 
     def test_cli_overrides_without_yaml(self):
-        overrides = {"model.n_layers": "6", "train.batch_size": "32"}
+        overrides = {"model.n_layers": "6", "train.batch_size": "32", "precision": "fp16"}
         cfg = load_config(config_path=None, overrides=overrides)
         assert cfg.model.n_layers == 6
         assert cfg.train.batch_size == 32
+        assert cfg.train.precision == "fp16"
+
+    def test_invalid_precision_override_raises(self):
+        with pytest.raises(ValueError, match="Unsupported train.precision"):
+            load_config(config_path=None, overrides={"precision": "fp32"})
+
+    def test_invalid_precision_yaml_raises(self, tmp_path):
+        yaml_content = {"train": {"precision": "fp32"}}
+        yaml_path = tmp_path / "test.yaml"
+        yaml_path.write_text(yaml.dump(yaml_content))
+        with pytest.raises(ValueError, match="Unsupported train.precision"):
+            load_config(str(yaml_path))

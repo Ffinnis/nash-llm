@@ -17,6 +17,7 @@ train:
   eval_interval: 100
   checkpoint_interval: 1000
   grad_accum_steps: 2
+  precision: bf16
 
 metrics:
   wandb_project: nash-llm

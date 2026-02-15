@@ -1,8 +1,8 @@
 model:
-  n_layers: 4
+  n_layers: 8
   n_heads: 16
-  d_model: 1536
-  d_ff: 6144
+  d_model: 896
+  d_ff: 3584
   vocab_size: 50257
   max_seq_len: 1024
   dropout: 0.1

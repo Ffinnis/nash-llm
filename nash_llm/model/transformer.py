@@ -58,7 +58,8 @@ class GPT(nn.Module):
         for block in self.blocks:
             x = block(x)
         x = self.ln_f(x)
-        logits = self.lm_head(x)
+        with torch.amp.autocast(device_type=x.device.type, enabled=False):
+            logits = self.lm_head(x.float())
 
         if targets is None:
             return logits

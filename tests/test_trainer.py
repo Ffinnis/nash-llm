@@ -49,3 +49,21 @@ class TestTrainer:
         history = trainer.train()
         eval_entries = [h for h in history if "val_loss" in h]
         assert len(eval_entries) > 0
+
+    def test_progress_metrics_logged(self, tmp_path):
+        cfg = self._make_config(tmp_path)
+        ckpt_dir = str(tmp_path / "checkpoints")
+        trainer = Trainer(cfg, checkpoint_dir=ckpt_dir)
+        history = trainer.train()
+
+        assert len(history) == cfg.train.max_steps
+        assert all("tokens_per_sec" in h for h in history)
+        assert all("step_current" in h for h in history)
+        assert all("steps_remaining" in h for h in history)
+        assert all("progress_pct" in h for h in history)
+        assert all("progress_bar" in h for h in history)
+
+        assert history[0]["step_current"] == 1
+        assert history[-1]["steps_remaining"] == 0
+        assert history[-1]["progress_pct"] == 100.0
+        assert all(h["tokens_per_sec"] > 0 for h in history)

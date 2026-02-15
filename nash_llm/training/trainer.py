@@ -1,5 +1,6 @@
 import os
 import math
+import time
 import torch
 from torch.utils.data import DataLoader
 from typing import Any
@@ -61,6 +62,37 @@ class Trainer:
             pg["lr"] = lr
         return lr
 
+    @staticmethod
+    def _progress_bar(progress: float, width: int = 30) -> str:
+        progress = max(0.0, min(1.0, progress))
+        filled = int(progress * width)
+        return f"[{'#' * filled}{'-' * (width - filled)}]"
+
+    def _build_progress_metrics(self, step: int, tokens_per_sec: float) -> dict[str, Any]:
+        total_steps = self.config.train.max_steps
+        current_step = step + 1
+        progress_ratio = (current_step / total_steps) if total_steps > 0 else 1.0
+        steps_remaining = max(total_steps - current_step, 0)
+        return {
+            "step_current": current_step,
+            "steps_total": total_steps,
+            "steps_remaining": steps_remaining,
+            "progress_pct": progress_ratio * 100.0,
+            "tokens_per_sec": tokens_per_sec,
+            "progress_bar": self._progress_bar(progress_ratio),
+        }
+
+    @staticmethod
+    def _format_progress_log(metrics: dict[str, Any]) -> str:
+        return (
+            f"{metrics['progress_bar']} {metrics['progress_pct']:.2f}% | "
+            f"step {metrics['step_current']}/{metrics['steps_total']} "
+            f"(left {metrics['steps_remaining']}) | "
+            f"loss {metrics['train_loss']:.4f} | "
+            f"lr {metrics['lr']:.2e} | "
+            f"tok/s {metrics['tokens_per_sec']:.0f}"
+        )
+
     def train(self) -> list[dict[str, Any]]:
         history: list[dict[str, Any]] = []
         cfg = self.config.train
@@ -68,10 +100,12 @@ class Trainer:
         train_iter = iter(self.train_loader)
 
         for step in range(self.start_step, cfg.max_steps):
+            step_started_at = time.perf_counter()
             lr = self._set_lr(step)
 
             self.optimizer.zero_grad()
             accum_loss = 0.0
+            tokens_processed = 0
 
             for micro_step in range(cfg.grad_accum_steps):
                 try:
@@ -81,6 +115,7 @@ class Trainer:
                     x, y = next(train_iter)
 
                 x, y = x.to(self.device), y.to(self.device)
+                tokens_processed += int(x.numel())
 
                 with torch.amp.autocast("cuda", enabled=self.use_amp):
                     _, loss = self.model(x, y)
@@ -96,10 +131,16 @@ class Trainer:
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
-            record = {"step": step, "train_loss": accum_loss, "lr": lr}
+            elapsed = max(time.perf_counter() - step_started_at, 1e-8)
+            tokens_per_sec = tokens_processed / elapsed
+            progress_metrics = self._build_progress_metrics(step, tokens_per_sec)
+
+            record = {"step": step, "train_loss": accum_loss, "lr": lr, **progress_metrics}
 
             if step % self.config.metrics.log_interval == 0:
-                self.logger.log({"train_loss": accum_loss, "lr": lr}, step=step)
+                train_metrics = {"train_loss": accum_loss, "lr": lr, **progress_metrics}
+                self.logger.log(train_metrics, step=step)
+                print(self._format_progress_log(train_metrics))
 
             if step > 0 and step % cfg.eval_interval == 0:
                 self.model.eval()

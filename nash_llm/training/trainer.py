@@ -59,10 +59,20 @@ class Trainer:
         else:
             self.train_max_steps = config.train.max_steps
 
+        self.use_amp, self.amp_dtype, self.use_grad_scaler = self._resolve_precision_mode(
+            self.device,
+            config.train.precision,
+        )
+
         self.model = GPT(config.model).to(self.device)
 
+        # Fused AdamW can be numerically brittle in some bf16 stacks; keep it for fp16 path only.
+        use_fused_adamw = self.device.type == "cuda" and config.train.precision == "fp16"
         self.optimizer = configure_optimizer(
-            self.model, lr=config.train.learning_rate, weight_decay=config.train.weight_decay,
+            self.model,
+            lr=config.train.learning_rate,
+            weight_decay=config.train.weight_decay,
+            fused=use_fused_adamw,
         )
 
         min_lr = config.train.learning_rate / 10
@@ -98,11 +108,6 @@ class Trainer:
         self.val_loader = DataLoader(self.val_dataset, **val_loader_kwargs)
 
         self.logger = MetricsLogger(config.metrics, run_config=asdict(config))
-
-        self.use_amp, self.amp_dtype, self.use_grad_scaler = self._resolve_precision_mode(
-            self.device,
-            config.train.precision,
-        )
         self.scaler = torch.amp.GradScaler("cuda", enabled=True) if self.use_grad_scaler else None
 
         self.start_step = 0

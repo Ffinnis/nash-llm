@@ -64,7 +64,7 @@ class GPT(nn.Module):
             return logits
 
         loss = nn.functional.cross_entropy(
-            logits.view(-1, logits.size(-1)),
+            logits.float().view(-1, logits.size(-1)),
             targets.view(-1),
         )
         return logits, loss

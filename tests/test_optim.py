@@ -1,4 +1,6 @@
 import torch
+import pytest
+from unittest.mock import patch
 from nash_llm.model import GPT
 from nash_llm.config import ModelConfig
 from nash_llm.optim import configure_optimizer
@@ -25,3 +27,13 @@ class TestConfigureOptimizer:
         no_decay_group = [pg for pg in opt.param_groups if pg["weight_decay"] == 0.0][0]
         no_decay_count = sum(p.numel() for p in no_decay_group["params"])
         assert no_decay_count > 0
+
+    @patch("torch.cuda.is_available", return_value=False)
+    def test_fused_false_is_allowed_without_cuda(self, _mock_cuda):
+        opt = configure_optimizer(self.model, lr=3e-4, weight_decay=0.1, fused=False)
+        assert isinstance(opt, torch.optim.AdamW)
+
+    @patch("torch.cuda.is_available", return_value=False)
+    def test_fused_true_without_cuda_raises(self, _mock_cuda):
+        with pytest.raises(ValueError, match="Fused AdamW requested"):
+            configure_optimizer(self.model, lr=3e-4, weight_decay=0.1, fused=True)

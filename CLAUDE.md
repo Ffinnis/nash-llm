@@ -70,6 +70,10 @@ Decoder-only GPT with pre-LayerNorm, GELU activation, and weight tying (`lm_head
 
 `configure_optimizer()` splits params into decay (2D+ tensors) and no-decay (biases, layernorm) groups for AdamW.
 
+### Rules
+
+- **Do not run tests locally.** The user will run them manually.
+
 ### Key conventions
 
 - Tokenizer: GPT-2 via tiktoken (vocab_size=50257)

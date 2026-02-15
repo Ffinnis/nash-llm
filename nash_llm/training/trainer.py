@@ -21,6 +21,8 @@ class Trainer:
         self.config = config
         self.checkpoint_dir = checkpoint_dir
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if self.device.type == "cuda":
+            torch.set_float32_matmul_precision("high")
         self.tokens_per_micro_batch = config.train.batch_size * config.model.max_seq_len
         self.tokens_per_step = self.tokens_per_micro_batch * config.train.grad_accum_steps
         if config.train.max_tokens > 0:

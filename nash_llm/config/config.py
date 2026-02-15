@@ -26,6 +26,7 @@ class TrainConfig:
     checkpoint_interval: int = 5000
     grad_accum_steps: int = 1
     compile: bool = False
+    dtype: str = "bfloat16"
 
 
 @dataclass

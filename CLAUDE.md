@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-nash-llm is a research LLM framework for pretraining and fine-tuning GPT-style transformers, inspired by nanoGPT. It targets single NVIDIA GPU (CUDA) training with mixed precision (float16).
+nash-llm is a research LLM framework for pretraining and fine-tuning GPT-style transformers, inspired by nanoGPT. It targets single NVIDIA GPU (CUDA) training with mixed precision (bfloat16).
 
 ## Commands
 

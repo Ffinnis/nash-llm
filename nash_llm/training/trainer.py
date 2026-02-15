@@ -72,7 +72,10 @@ class Trainer:
         self.logger = MetricsLogger(config.metrics, run_config=asdict(config))
 
         self.use_amp = self.device.type == "cuda"
-        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
+        dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16}
+        self.amp_dtype = dtype_map.get(config.train.dtype, torch.bfloat16)
+        self.use_scaler = self.use_amp and self.amp_dtype == torch.float16
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_scaler)
 
         self.start_step = 0
         self.best_val_loss = float("inf")
@@ -173,19 +176,26 @@ class Trainer:
                 y = y.to(self.device, non_blocking=self.pin_memory)
                 tokens_processed += int(x.numel())
 
-                with torch.amp.autocast("cuda", enabled=self.use_amp):
+                with torch.amp.autocast("cuda", dtype=self.amp_dtype, enabled=self.use_amp):
                     _, loss = self.model(x, y)
                     loss = loss / micro_steps_target
 
-                self.scaler.scale(loss).backward()
+                if self.use_scaler:
+                    self.scaler.scale(loss).backward()
+                else:
+                    loss.backward()
                 accum_loss += loss.detach()
 
-            if cfg.grad_clip > 0:
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.grad_clip)
-
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+            if self.use_scaler:
+                if cfg.grad_clip > 0:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.grad_clip)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                if cfg.grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.grad_clip)
+                self.optimizer.step()
 
             total_tokens_processed += tokens_processed
             elapsed = max(time.perf_counter() - step_started_at, 1e-8)
@@ -202,8 +212,8 @@ class Trainer:
 
             if step > 0 and step % cfg.eval_interval == 0:
                 self.model.eval()
-                val_loss = compute_val_loss(self.model, self.val_loader, max_batches=20)
-                accuracy = compute_accuracy(self.model, self.val_loader, max_batches=20)
+                val_loss = compute_val_loss(self.model, self.val_loader, max_batches=20, amp_dtype=self.amp_dtype)
+                accuracy = compute_accuracy(self.model, self.val_loader, max_batches=20, amp_dtype=self.amp_dtype)
                 perplexity = math.exp(val_loss) if val_loss < 20 else float("inf")
 
                 eval_metrics = {"val_loss": val_loss, "accuracy": accuracy, "perplexity": perplexity}

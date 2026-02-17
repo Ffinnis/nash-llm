@@ -112,6 +112,22 @@ class Muon(Optimizer):
         self._muon_params = muon_params
         self._teon_groups = teon_params
 
+        # Pre-group MUON params by shape for batched orthogonalization
+        self._muon_shape_groups: dict[tuple[int, int], list[nn.Parameter]] = {}
+        for p in muon_params:
+            key = (p.shape[0], p.shape[1])
+            self._muon_shape_groups.setdefault(key, []).append(p)
+
+        # Pre-group TEON groups by (m, n, K) for batched orthogonalization
+        self._teon_shape_groups: dict[tuple[int, int, int], list[list[nn.Parameter]]] = {}
+        for group in teon_params:
+            if not group:
+                continue
+            m, n = group[0].shape
+            K = len(group)
+            key = (m, n, K)
+            self._teon_shape_groups.setdefault(key, []).append(group)
+
     @torch.no_grad()
     def step(self, closure=None) -> float | None:  # type: ignore[override]
         loss = None
@@ -124,73 +140,86 @@ class Muon(Optimizer):
         wd = self.defaults["weight_decay"]
         ns_steps = self.defaults["ns_steps"]
 
-        # --- MUON: per-layer orthogonalization ---
+        # --- MUON: batched per-shape orthogonalization ---
+        # Phase 1: update all momentum buffers
         for param in self._muon_params:
             if param.grad is None:
                 continue
-
             state = self.state[param]
             if len(state) == 0:
                 state["momentum_buffer"] = torch.zeros_like(param.data)
-
             buf = state["momentum_buffer"]
             buf.mul_(mu).add_(param.grad, alpha=1.0 - mu)
 
-            m, n = buf.shape
-            ortho = orthogonalize(buf, ns_steps)
+        # Phase 2: batched orthogonalization by shape
+        for (m, n), params in self._muon_shape_groups.items():
+            if all(p.grad is not None for p in params):
+                # Fast path: all grads present → fixed batch size
+                bufs = torch.stack([self.state[p]["momentum_buffer"] for p in params])
+                ortho = orthogonalize(bufs, ns_steps)
+                scale = (m / n) ** 0.5
+                for i, p in enumerate(params):
+                    if wd > 0:
+                        p.data.mul_(1.0 - lr * wd)
+                    p.data.add_(ortho[i], alpha=-lr * scale)
+            else:
+                # Slow path: per-param fallback (rare, e.g. frozen layers)
+                for p in params:
+                    if p.grad is None:
+                        continue
+                    buf = self.state[p]["momentum_buffer"]
+                    o = orthogonalize(buf, ns_steps)
+                    if wd > 0:
+                        p.data.mul_(1.0 - lr * wd)
+                    p.data.add_(o, alpha=-lr * (m / n) ** 0.5)
 
-            if wd > 0:
-                param.data.mul_(1.0 - lr * wd)
-            param.data.add_(ortho, alpha=-lr * (m / n) ** 0.5)
-
-        # --- TEON: cross-layer stacking ---
+        # --- TEON: batched cross-layer stacking ---
+        # Phase 1: update all TEON momentum buffers
         for group in self._teon_groups:
-            K = len(group)
-            if K == 0:
-                continue
-
-            momentums = []
             for param in group:
                 if param.grad is None:
                     continue
-
                 state = self.state[param]
                 if len(state) == 0:
                     state["momentum_buffer"] = torch.zeros_like(param.data)
-
                 buf = state["momentum_buffer"]
                 buf.mul_(mu).add_(param.grad, alpha=1.0 - mu)
-                momentums.append(buf)
 
-            if len(momentums) != K:
-                # Fallback: per-layer MUON if not all grads available
+        # Phase 2: batched orthogonalization by (m, n, K)
+        for (m, n, K), groups in self._teon_shape_groups.items():
+            complete = []
+            incomplete = []
+            for group in groups:
+                if all(p.grad is not None for p in group):
+                    complete.append(group)
+                else:
+                    incomplete.append(group)
+
+            # Fast path: batch all complete groups
+            if complete:
+                Z_list = []
+                for group in complete:
+                    momentums = [self.state[p]["momentum_buffer"] for p in group]
+                    Z_list.append(torch.cat(momentums, dim=1))
+                Z_batch = torch.stack(Z_list)
+                Q_batch = orthogonalize(Z_batch, ns_steps)
+                scale = (m / n) ** 0.5
+                for gi, group in enumerate(complete):
+                    ortho_slices = Q_batch[gi].split(n, dim=1)
+                    for i, param in enumerate(group):
+                        if wd > 0:
+                            param.data.mul_(1.0 - lr * wd)
+                        param.data.add_(ortho_slices[i], alpha=-lr * scale)
+
+            # Fallback: per-param MUON for incomplete groups
+            for group in incomplete:
                 for param in group:
                     if param.grad is None:
                         continue
                     buf = self.state[param]["momentum_buffer"]
-                    m, n = buf.shape
-                    ortho = orthogonalize(buf, ns_steps)
+                    o = orthogonalize(buf, ns_steps)
                     if wd > 0:
                         param.data.mul_(1.0 - lr * wd)
-                    param.data.add_(ortho, alpha=-lr * (m / n) ** 0.5)
-                continue
-
-            m, n = momentums[0].shape
-
-            # Mode-1 matricization: Z = [M^(1) | M^(2) | ... | M^(K)]
-            Z = torch.cat(momentums, dim=1)  # (m, n*K)
-
-            # Orthogonalize the stacked matrix
-            Q = orthogonalize(Z, ns_steps)
-
-            # Split back into K slices
-            ortho_slices = Q.split(n, dim=1)
-
-            # Update each param
-            scale = (m / n) ** 0.5
-            for i, param in enumerate(group):
-                if wd > 0:
-                    param.data.mul_(1.0 - lr * wd)
-                param.data.add_(ortho_slices[i], alpha=-lr * scale)
+                    param.data.add_(o, alpha=-lr * (m / n) ** 0.5)
 
         return loss

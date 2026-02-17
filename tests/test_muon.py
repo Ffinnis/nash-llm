@@ -34,6 +34,21 @@ class TestPolarExpress:
         result = _polar_express_impl(M, steps=5)
         assert result.shape == (64, 64)
 
+    def test_batched_matches_individual(self):
+        """Batched 3D polar_express should match independent 2D calls."""
+        torch.manual_seed(42)
+        M1 = torch.randn(64, 128)
+        M2 = torch.randn(64, 128)
+
+        r1 = _polar_express_impl(M1, steps=5)
+        r2 = _polar_express_impl(M2, steps=5)
+
+        batch = torch.stack([M1, M2])
+        rb = _polar_express_impl(batch, steps=5)
+
+        assert torch.allclose(r1, rb[0], atol=1e-5)
+        assert torch.allclose(r2, rb[1], atol=1e-5)
+
     def test_orthogonality_of_result(self):
         """Result should have orthonormal rows (for wide matrix)."""
         torch.manual_seed(42)

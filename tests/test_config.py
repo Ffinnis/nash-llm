@@ -35,6 +35,10 @@ class TestTrainConfig:
         assert cfg.checkpoint_interval == 5000
         assert cfg.grad_accum_steps == 1
         assert cfg.precision == "bf16"
+        assert cfg.optimizer == "adamw"
+        assert cfg.muon_lr == 0.02
+        assert cfg.muon_momentum == 0.95
+        assert cfg.ns_steps == 5
 
     def test_custom(self):
         cfg = TrainConfig(learning_rate=1e-4, batch_size=32)
@@ -113,3 +117,30 @@ class TestLoadConfig:
         yaml_path.write_text(yaml.dump(yaml_content))
         with pytest.raises(ValueError, match="Unsupported train.precision"):
             load_config(str(yaml_path))
+
+    def test_optimizer_override(self):
+        cfg = load_config(config_path=None, overrides={"optimizer": "teon"})
+        assert cfg.train.optimizer == "teon"
+
+    def test_optimizer_muon_override(self):
+        cfg = load_config(config_path=None, overrides={"optimizer": "muon"})
+        assert cfg.train.optimizer == "muon"
+
+    def test_invalid_optimizer_override_raises(self):
+        with pytest.raises(ValueError, match="Unsupported train.optimizer"):
+            load_config(config_path=None, overrides={"optimizer": "sgd"})
+
+    def test_invalid_optimizer_yaml_raises(self, tmp_path):
+        yaml_content = {"train": {"optimizer": "invalid"}}
+        yaml_path = tmp_path / "test.yaml"
+        yaml_path.write_text(yaml.dump(yaml_content))
+        with pytest.raises(ValueError, match="Unsupported train.optimizer"):
+            load_config(str(yaml_path))
+
+    def test_optimizer_yaml_teon(self, tmp_path):
+        yaml_content = {"train": {"optimizer": "teon", "muon_lr": 0.03}}
+        yaml_path = tmp_path / "test.yaml"
+        yaml_path.write_text(yaml.dump(yaml_content))
+        cfg = load_config(str(yaml_path))
+        assert cfg.train.optimizer == "teon"
+        assert cfg.train.muon_lr == 0.03

@@ -23,8 +23,7 @@ _POLAR_EXPRESS_COEFFS_SAFE = [
 ] + [_POLAR_EXPRESS_COEFFS[-1]]
 
 
-@torch.compile
-def polar_express(G: torch.Tensor, steps: int = 5) -> torch.Tensor:
+def _polar_express_impl(G: torch.Tensor, steps: int = 5) -> torch.Tensor:
     """Polar Express: optimal polynomial approximation of polar(G) = UV^T.
 
     Uses pre-computed degree-5 adaptive coefficients with safety factor
@@ -54,6 +53,13 @@ def polar_express(G: torch.Tensor, steps: int = 5) -> torch.Tensor:
         X = X.mT
 
     return X
+
+
+# torch.compile for GPU acceleration; falls back to eager on CPU
+if torch.cuda.is_available():
+    polar_express = torch.compile(_polar_express_impl)
+else:
+    polar_express = _polar_express_impl
 
 
 def orthogonalize(M: torch.Tensor, steps: int = 5) -> torch.Tensor:
@@ -107,7 +113,7 @@ class Muon(Optimizer):
         self._teon_groups = teon_params
 
     @torch.no_grad()
-    def step(self, closure=None):
+    def step(self, closure=None) -> float | None:  # type: ignore[override]
         loss = None
         if closure is not None:
             with torch.enable_grad():

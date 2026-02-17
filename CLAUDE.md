@@ -34,8 +34,14 @@ uv run python scripts/train.py --config configs/pretrain_100m.yaml
 # pretrain_debug.yaml: tiny debug preset
 uv run python scripts/train.py --config configs/pretrain_debug.yaml
 
+# Train with TEON optimizer (cross-layer Q/K/V stacking + MUON + AdamW)
+uv run python scripts/train.py --config configs/pretrain_small_teon.yaml
+uv run python scripts/train.py --config configs/pretrain_100m_teon.yaml
+
 # CLI overrides (short keys auto-resolve to their section)
 uv run python scripts/train.py --config configs/pretrain_small.yaml --max_steps 50 --learning_rate 1e-3
+# Switch optimizer via CLI override
+uv run python scripts/train.py --config configs/pretrain_small.yaml --optimizer teon --muon_lr 0.02
 
 # Generate text from checkpoint
 uv run python scripts/generate.py --checkpoint checkpoints/best.pt --prompt "Once upon a time"
@@ -68,7 +74,12 @@ Decoder-only GPT with pre-LayerNorm, GELU activation, and weight tying (`lm_head
 
 `Trainer` orchestrates the loop: AMP autocast (`bf16`/`fp16`), gradient accumulation (`grad_accum_steps`), cosine LR schedule with linear warmup, gradient clipping, periodic eval (val_loss, accuracy, perplexity), checkpointing, and wandb logging.
 
-`configure_optimizer()` splits params into decay (2D+ tensors) and no-decay (biases, layernorm) groups for AdamW.
+`configure_optimizers()` creates optimizer(s) based on `train.optimizer`:
+- `"adamw"` (default): single AdamW, params split into decay/no-decay groups
+- `"muon"`: Muon (per-layer orthogonalization for all 2D attn+MLP weights) + AdamW (embeddings, LN, biases)
+- `"teon"`: Muon with TEON cross-layer stacking (K=2 for Q/K/V) + per-layer MUON (out_proj, MLP) + AdamW (rest)
+
+MUON/TEON uses Polar Express (Amsel et al., 2025) for orthogonalization with pre-computed degree-5 coefficients. Attention uses separate `q_proj`, `k_proj`, `v_proj` projections. Config fields: `muon_lr` (default 0.02), `muon_momentum` (0.95), `ns_steps` (5).
 
 ### Rules
 

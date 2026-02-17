@@ -2,7 +2,7 @@ import torch
 import pytest
 from nash_llm.model import GPT
 from nash_llm.config import ModelConfig
-from nash_llm.optim.muon import polar_express, orthogonalize, Muon
+from nash_llm.optim.muon import _polar_express_impl, orthogonalize, Muon
 from nash_llm.optim.adamw import configure_optimizers
 
 
@@ -15,7 +15,7 @@ class TestPolarExpress:
         exact_polar = U @ Vt
 
         # Use 7 steps for tighter convergence; bf16 limits precision to ~0.1 relative error
-        approx = polar_express.__wrapped__(M, steps=7)  # bypass @torch.compile
+        approx = _polar_express_impl(M, steps=7)  # bypass @torch.compile
 
         error = (exact_polar.float() - approx.float()).norm() / exact_polar.float().norm()
         assert error < 0.1, f"Relative error {error:.4f} too large"
@@ -24,20 +24,20 @@ class TestPolarExpress:
         """Tall matrices (m > n) should be handled via transpose."""
         torch.manual_seed(42)
         M = torch.randn(128, 64)  # tall
-        result = polar_express.__wrapped__(M, steps=5)
+        result = _polar_express_impl(M, steps=5)
         assert result.shape == (128, 64)
 
     def test_square_matrix(self):
         torch.manual_seed(42)
         M = torch.randn(64, 64)
-        result = polar_express.__wrapped__(M, steps=5)
+        result = _polar_express_impl(M, steps=5)
         assert result.shape == (64, 64)
 
     def test_orthogonality_of_result(self):
         """Result should have orthonormal rows (for wide matrix)."""
         torch.manual_seed(42)
         M = torch.randn(32, 64)
-        result = polar_express.__wrapped__(M, steps=6).float()
+        result = _polar_express_impl(M, steps=6).float()
 
         # Q @ Q^T should approximate I
         product = result @ result.T

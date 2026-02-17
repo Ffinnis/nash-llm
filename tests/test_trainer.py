@@ -119,3 +119,46 @@ class TestTrainer:
         assert use_amp is False
         assert amp_dtype is None
         assert use_grad_scaler is False
+
+    def test_muon_creates_two_optimizers(self, tmp_path):
+        cfg = self._make_config(tmp_path)
+        cfg.train.optimizer = "muon"
+        ckpt_dir = str(tmp_path / "checkpoints")
+        trainer = Trainer(cfg, checkpoint_dir=ckpt_dir)
+        assert len(trainer.optimizers) == 2
+        assert trainer.muon_scheduler is not None
+
+    def test_teon_creates_two_optimizers(self, tmp_path):
+        cfg = self._make_config(tmp_path)
+        cfg.train.optimizer = "teon"
+        ckpt_dir = str(tmp_path / "checkpoints")
+        trainer = Trainer(cfg, checkpoint_dir=ckpt_dir)
+        assert len(trainer.optimizers) == 2
+        assert trainer.muon_scheduler is not None
+
+    def test_muon_training_runs(self, tmp_path):
+        cfg = self._make_config(tmp_path)
+        cfg.train.optimizer = "muon"
+        cfg.train.max_steps = 5
+        ckpt_dir = str(tmp_path / "checkpoints")
+        trainer = Trainer(cfg, checkpoint_dir=ckpt_dir)
+        history = trainer.train()
+        assert len(history) == 5
+        assert all(not np.isnan(h["train_loss"]) for h in history)
+
+    def test_teon_training_runs(self, tmp_path):
+        cfg = self._make_config(tmp_path)
+        cfg.train.optimizer = "teon"
+        cfg.train.max_steps = 5
+        ckpt_dir = str(tmp_path / "checkpoints")
+        trainer = Trainer(cfg, checkpoint_dir=ckpt_dir)
+        history = trainer.train()
+        assert len(history) == 5
+        assert all(not np.isnan(h["train_loss"]) for h in history)
+
+    def test_adamw_default_single_optimizer(self, tmp_path):
+        cfg = self._make_config(tmp_path)
+        ckpt_dir = str(tmp_path / "checkpoints")
+        trainer = Trainer(cfg, checkpoint_dir=ckpt_dir)
+        assert len(trainer.optimizers) == 1
+        assert trainer.muon_scheduler is None

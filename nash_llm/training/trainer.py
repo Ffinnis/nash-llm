@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from typing import Any
 
 from nash_llm.model import GPT
-from nash_llm.optim import configure_optimizer
+from nash_llm.optim import configure_optimizer, configure_optimizers
 from nash_llm.data.dataset import PretrainDataset
 from nash_llm.training.scheduler import CosineScheduler
 from nash_llm.training.checkpoint import save_checkpoint
@@ -68,12 +68,18 @@ class Trainer:
 
         # Fused AdamW can be numerically brittle in some bf16 stacks; keep it for fp16 path only.
         use_fused_adamw = self.device.type == "cuda" and config.train.precision == "fp16"
-        self.optimizer = configure_optimizer(
+        self.optimizers = configure_optimizers(
             self.model,
+            optimizer_type=config.train.optimizer,
             lr=config.train.learning_rate,
             weight_decay=config.train.weight_decay,
+            muon_lr=config.train.muon_lr,
+            muon_momentum=config.train.muon_momentum,
+            ns_steps=config.train.ns_steps,
             fused=use_fused_adamw,
         )
+        # Keep self.optimizer pointing to the first optimizer for backward compat
+        self.optimizer = self.optimizers[0]
 
         min_lr = config.train.learning_rate / 10
         scheduler_warmup_steps = min(config.train.warmup_steps, self.train_max_steps)
@@ -81,6 +87,15 @@ class Trainer:
             max_lr=config.train.learning_rate, min_lr=min_lr,
             warmup_steps=scheduler_warmup_steps, max_steps=self.train_max_steps,
         )
+        # Separate scheduler for muon_lr when using muon/teon
+        if config.train.optimizer in {"muon", "teon"}:
+            muon_min_lr = config.train.muon_lr / 10
+            self.muon_scheduler = CosineScheduler(
+                max_lr=config.train.muon_lr, min_lr=muon_min_lr,
+                warmup_steps=scheduler_warmup_steps, max_steps=self.train_max_steps,
+            )
+        else:
+            self.muon_scheduler = None
 
         self.train_dataset = PretrainDataset(config.data.tokenized_dir, split="train", seq_len=config.model.max_seq_len)
         self.val_dataset = PretrainDataset(config.data.tokenized_dir, split="val", seq_len=config.model.max_seq_len)
@@ -121,15 +136,23 @@ class Trainer:
 
     def _resume(self, path: str):
         from nash_llm.training.checkpoint import load_checkpoint
-        ckpt = load_checkpoint(path, self.model, self.optimizer)
+        ckpt = load_checkpoint(path, self.model, self.optimizers)
         self.start_step = ckpt["step"]
         if ckpt.get("metrics", {}).get("val_loss"):
             self.best_val_loss = ckpt["metrics"]["val_loss"]
 
     def _set_lr(self, step: int):
         lr = self.scheduler.get_lr(step)
-        for pg in self.optimizer.param_groups:
-            pg["lr"] = lr
+        if self.muon_scheduler is not None:
+            # Muon optimizer is first, AdamW is second
+            muon_lr = self.muon_scheduler.get_lr(step)
+            for pg in self.optimizers[0].param_groups:
+                pg["lr"] = muon_lr
+            for pg in self.optimizers[1].param_groups:
+                pg["lr"] = lr
+        else:
+            for pg in self.optimizer.param_groups:
+                pg["lr"] = lr
         return lr
 
     @staticmethod
@@ -187,7 +210,8 @@ class Trainer:
             step_started_at = time.perf_counter()
             lr = self._set_lr(step)
 
-            self.optimizer.zero_grad(set_to_none=True)
+            for opt in self.optimizers:
+                opt.zero_grad(set_to_none=True)
             accum_loss = torch.zeros((), device=self.device)
             tokens_processed = 0
             remaining_token_budget = cfg.max_tokens - total_tokens_processed if cfg.max_tokens > 0 else 0
@@ -229,15 +253,18 @@ class Trainer:
             if cfg.grad_clip > 0:
                 if self.use_grad_scaler:
                     assert self.scaler is not None
-                    self.scaler.unscale_(self.optimizer)
+                    for opt in self.optimizers:
+                        self.scaler.unscale_(opt)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.grad_clip)
 
             if self.use_grad_scaler:
                 assert self.scaler is not None
-                self.scaler.step(self.optimizer)
+                for opt in self.optimizers:
+                    self.scaler.step(opt)
                 self.scaler.update()
             else:
-                self.optimizer.step()
+                for opt in self.optimizers:
+                    opt.step()
 
             total_tokens_processed += tokens_processed
             elapsed = max(time.perf_counter() - step_started_at, 1e-8)
@@ -266,7 +293,7 @@ class Trainer:
                     self.best_val_loss = val_loss
                     save_checkpoint(
                         os.path.join(self.checkpoint_dir, "best.pt"),
-                        self.model, self.optimizer, step=step, config=self.config, metrics=eval_metrics,
+                        self.model, self.optimizers, step=step, config=self.config, metrics=eval_metrics,
                     )
 
                 self.model.train()
@@ -274,7 +301,7 @@ class Trainer:
             if step > 0 and step % cfg.checkpoint_interval == 0:
                 save_checkpoint(
                     os.path.join(self.checkpoint_dir, f"step_{step}.pt"),
-                    self.model, self.optimizer, step=step, config=self.config,
+                    self.model, self.optimizers, step=step, config=self.config,
                 )
 
             history.append(record)

@@ -27,6 +27,10 @@ class TrainConfig:
     grad_accum_steps: int = 1
     compile: bool = False
     precision: str = "bf16"
+    optimizer: str = "adamw"
+    muon_lr: float = 0.02
+    muon_momentum: float = 0.95
+    ns_steps: int = 5
 
 
 @dataclass
@@ -74,6 +78,15 @@ def _validate_train_precision(value: str) -> str:
     return precision
 
 
+def _validate_train_optimizer(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"Unsupported train.optimizer '{value}'. Expected one of: adamw, muon, teon")
+    optimizer = value.lower()
+    if optimizer not in {"adamw", "muon", "teon"}:
+        raise ValueError(f"Unsupported train.optimizer '{value}'. Expected one of: adamw, muon, teon")
+    return optimizer
+
+
 def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
     for key, value in overrides.items():
         parts = key.split(".")
@@ -97,6 +110,8 @@ def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
             parsed = field_type(value)
         if section_name == "train" and field_name == "precision":
             parsed = _validate_train_precision(parsed)
+        if section_name == "train" and field_name == "optimizer":
+            parsed = _validate_train_optimizer(parsed)
         setattr(section, field_name, parsed)
     return cfg
 
@@ -111,6 +126,7 @@ def load_config(config_path: str | None = None, overrides: dict[str, str] | None
         if "train" in raw:
             cfg.train = TrainConfig(**{**vars(cfg.train), **raw["train"]})
             cfg.train.precision = _validate_train_precision(cfg.train.precision)
+            cfg.train.optimizer = _validate_train_optimizer(cfg.train.optimizer)
         if "data" in raw:
             cfg.data = DataConfig(**{**vars(cfg.data), **raw["data"]})
         if "metrics" in raw:

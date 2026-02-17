@@ -1,1 +1,2 @@
-from nash_llm.optim.adamw import configure_optimizer
+from nash_llm.optim.adamw import configure_optimizer, configure_optimizers
+from nash_llm.optim.muon import Muon

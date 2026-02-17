@@ -16,7 +16,9 @@ class MultiHeadAttention(nn.Module):
         self.n_heads = config.n_heads
         self.head_dim = config.d_model // config.n_heads
 
-        self.qkv = nn.Linear(config.d_model, 3 * config.d_model)
+        self.q_proj = nn.Linear(config.d_model, config.d_model)
+        self.k_proj = nn.Linear(config.d_model, config.d_model)
+        self.v_proj = nn.Linear(config.d_model, config.d_model)
         self.out_proj = nn.Linear(config.d_model, config.d_model)
         self.dropout_p = config.dropout
         self.attn_dropout = nn.Dropout(config.dropout)
@@ -28,8 +30,9 @@ class MultiHeadAttention(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, C = x.shape
 
-        qkv = self.qkv(x)
-        q, k, v = qkv.split(C, dim=-1)
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
 
         q = q.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
         k = k.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)

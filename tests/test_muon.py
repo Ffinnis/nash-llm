@@ -1,5 +1,6 @@
 import torch
 import pytest
+import torch.nn as nn
 from nash_llm.model import GPT
 from nash_llm.config import ModelConfig
 from nash_llm.optim.muon import _polar_express_impl, orthogonalize, Muon
@@ -49,7 +50,7 @@ class TestPolarExpress:
 class TestMuonOptimizer:
     def setup_method(self):
         torch.manual_seed(42)
-        self.params = [torch.randn(64, 128, requires_grad=True) for _ in range(3)]
+        self.params = [nn.Parameter(torch.randn(64, 128)) for _ in range(3)]
 
     def test_muon_step_updates_weights(self):
         """A single Muon step should change the parameters."""
@@ -97,8 +98,8 @@ class TestTEONStacking:
     def test_teon_stacking_updates_all_params(self):
         """TEON should update all K params in a group."""
         torch.manual_seed(42)
-        p1 = torch.randn(64, 128, requires_grad=True)
-        p2 = torch.randn(64, 128, requires_grad=True)
+        p1 = nn.Parameter(torch.randn(64, 128))
+        p2 = nn.Parameter(torch.randn(64, 128))
         original = [p1.clone(), p2.clone()]
 
         opt = Muon(
@@ -119,22 +120,22 @@ class TestTEONStacking:
     def test_teon_stacked_ortho_differs_from_independent(self):
         """TEON stacking should produce different updates than per-layer MUON."""
         torch.manual_seed(42)
-        p1 = torch.randn(64, 128, requires_grad=True)
-        p2 = torch.randn(64, 128, requires_grad=True)
+        p1 = nn.Parameter(torch.randn(64, 128))
+        p2 = nn.Parameter(torch.randn(64, 128))
         g1 = torch.randn(64, 128)
         g2 = torch.randn(64, 128)
 
         # TEON path: stack and orthogonalize jointly
-        p1_teon = p1.clone().detach().requires_grad_(True)
-        p2_teon = p2.clone().detach().requires_grad_(True)
+        p1_teon = nn.Parameter(p1.detach().clone())
+        p2_teon = nn.Parameter(p2.detach().clone())
         opt_teon = Muon(muon_params=[], teon_params=[[p1_teon, p2_teon]], lr=0.02, momentum=0.0, ns_steps=5)
         p1_teon.grad = g1.clone()
         p2_teon.grad = g2.clone()
         opt_teon.step()
 
         # MUON path: orthogonalize independently
-        p1_muon = p1.clone().detach().requires_grad_(True)
-        p2_muon = p2.clone().detach().requires_grad_(True)
+        p1_muon = nn.Parameter(p1.detach().clone())
+        p2_muon = nn.Parameter(p2.detach().clone())
         opt_muon = Muon(muon_params=[p1_muon, p2_muon], teon_params=[], lr=0.02, momentum=0.0, ns_steps=5)
         p1_muon.grad = g1.clone()
         p2_muon.grad = g2.clone()
@@ -146,8 +147,8 @@ class TestTEONStacking:
     def test_teon_group_shapes_preserved(self):
         """After TEON step, param shapes should be unchanged."""
         torch.manual_seed(42)
-        p1 = torch.randn(32, 64, requires_grad=True)
-        p2 = torch.randn(32, 64, requires_grad=True)
+        p1 = nn.Parameter(torch.randn(32, 64))
+        p2 = nn.Parameter(torch.randn(32, 64))
 
         opt = Muon(muon_params=[], teon_params=[[p1, p2]], lr=0.02, momentum=0.95, ns_steps=5)
         p1.grad = torch.randn_like(p1)
@@ -214,6 +215,7 @@ class TestConfigureOptimizers:
         """TEON groups should contain q_proj, k_proj, v_proj weights."""
         opts = configure_optimizers(self.model, "teon", lr=3e-4, weight_decay=0.1)
         muon_opt = opts[0]
+        assert isinstance(muon_opt, Muon)
 
         teon_param_ids = set()
         for group in muon_opt._teon_groups:
@@ -231,9 +233,31 @@ class TestConfigureOptimizers:
         """Each TEON group should have K=2 params."""
         opts = configure_optimizers(self.model, "teon", lr=3e-4, weight_decay=0.1)
         muon_opt = opts[0]
+        assert isinstance(muon_opt, Muon)
 
         for group in muon_opt._teon_groups:
             assert len(group) == 2, f"TEON group should have K=2, got {len(group)}"
+
+    def test_teon_group_order_is_deterministic(self):
+        """TEON groups must be in a stable Q->K->V order for state_dict compatibility."""
+        opts = configure_optimizers(self.model, "teon", lr=3e-4, weight_decay=0.1)
+        muon_opt = opts[0]
+        assert isinstance(muon_opt, Muon)
+        name_by_id = {id(p): name for name, p in self.model.named_parameters()}
+
+        group_names = []
+        for group in muon_opt._teon_groups:
+            group_names.append(tuple(name_by_id[id(p)] for p in group))
+
+        expected = [
+            ("blocks.0.attn.q_proj.weight", "blocks.1.attn.q_proj.weight"),
+            ("blocks.2.attn.q_proj.weight", "blocks.3.attn.q_proj.weight"),
+            ("blocks.0.attn.k_proj.weight", "blocks.1.attn.k_proj.weight"),
+            ("blocks.2.attn.k_proj.weight", "blocks.3.attn.k_proj.weight"),
+            ("blocks.0.attn.v_proj.weight", "blocks.1.attn.v_proj.weight"),
+            ("blocks.2.attn.v_proj.weight", "blocks.3.attn.v_proj.weight"),
+        ]
+        assert group_names == expected
 
 
 class TestAttentionSplitQKV:

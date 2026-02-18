@@ -23,6 +23,9 @@ _POLAR_EXPRESS_COEFFS_SAFE = [
     for (a, b, c) in _POLAR_EXPRESS_COEFFS[:-1]
 ] + [_POLAR_EXPRESS_COEFFS[-1]]
 
+_SPECTRA_RMS_EPS = 1e-8
+_SPECTRA_RMS_FACTOR = 0.2
+
 
 def _polar_express_impl(G: torch.Tensor, steps: int = 5) -> torch.Tensor:
     """Polar Express: optimal polynomial approximation of polar(G) = UV^T.
@@ -121,8 +124,9 @@ class Muon(Optimizer):
     Math (Spectra-TEON per group of K params):
         Z = [M^(1) | M^(2) | ... | M^(K)]   (mode-1 matricization)
         O = SpectraShape(Z)
+        lr_eff = 0.2 * lr / (RMS(O) + eps)
         O^(k) = O[:, k*n:(k+1)*n]            (split back)
-        W^(k)_t = W^(k)_{t-1} - lr * sqrt(m/n) * O^(k)
+        W^(k)_t = W^(k)_{t-1} - lr_eff * O^(k)
     """
 
     def __init__(
@@ -247,7 +251,6 @@ class Muon(Optimizer):
 
             # Fast path: complete cross-layer groups use Spectra-TEON shaping
             if complete:
-                scale = (m / n) ** 0.5
                 for group in complete:
                     momentums = [self.state[p]["momentum_buffer"] for p in group]
                     Z = torch.cat(momentums, dim=1)
@@ -262,12 +265,14 @@ class Muon(Optimizer):
                         v_cache=v_cache,
                     )
                     anchor_state["v_cache"] = v_new
+                    rms = float(O.norm()) / ((O.numel() ** 0.5) + _SPECTRA_RMS_EPS)
+                    lr_eff = _SPECTRA_RMS_FACTOR * lr / (rms + _SPECTRA_RMS_EPS)
                     shaped_slices = O.split(n, dim=1)
 
                     for i, param in enumerate(group):
                         if wd > 0:
                             param.data.mul_(1.0 - lr * wd)
-                        param.data.add_(shaped_slices[i], alpha=-lr * scale)
+                        param.data.add_(shaped_slices[i], alpha=-lr_eff)
 
             # Fallback: per-param MUON for incomplete groups
             for group in incomplete:

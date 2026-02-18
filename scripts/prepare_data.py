@@ -9,6 +9,7 @@ DATASET_CONFIGS = {
     "tinystories_10M": {"hf_path": "roneneldan/TinyStories", "split": "train", "max_tokens": 10_000_000},
     "openwebtext_100M": {"hf_path": "Skylion007/openwebtext", "split": "train", "max_tokens": 100_000_000},
     "fineweb_1B": {"hf_path": "HuggingFaceFW/fineweb-edu", "name": "sample-10BT", "split": "train", "max_tokens": 1_000_000_000},
+    "fineweb_2_5B": {"hf_path": "HuggingFaceFW/fineweb-edu", "name": "sample-10BT", "split": "train", "max_tokens": 2_500_000_000},
 }
 
 SHARD_SIZE = 100_000_000

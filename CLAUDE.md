@@ -25,12 +25,17 @@ uv run pytest tests/test_transformer.py::test_gpt_forward -v
 uv run python scripts/prepare_data.py --dataset tinystories_10M
 uv run python scripts/prepare_data.py --dataset openwebtext_100M
 uv run python scripts/prepare_data.py --dataset fineweb_1B
+uv run python scripts/prepare_data.py --dataset fineweb_2_5B
 
 # Train
 # pretrain_small.yaml: 100M model on 10M-token dataset (token-budgeted)
 uv run python scripts/train.py --config configs/pretrain_small.yaml
 # pretrain_100m.yaml: same model on 100M-token dataset (token-budgeted)
 uv run python scripts/train.py --config configs/pretrain_100m.yaml
+# pretrain_1b.yaml: 124M model on 1B-token fineweb dataset (token-budgeted)
+uv run python scripts/train.py --config configs/pretrain_1b.yaml
+# pretrain_chinchilla.yaml: 124M model on 2.5B tokens (Chinchilla-optimal 20:1 ratio)
+uv run python scripts/train.py --config configs/pretrain_chinchilla.yaml
 # pretrain_debug.yaml: tiny debug preset
 uv run python scripts/train.py --config configs/pretrain_debug.yaml
 

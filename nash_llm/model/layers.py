@@ -108,8 +108,8 @@ class MoEFeedForward(nn.Module):
             out_flat.index_add_(0, expert_tokens, expert_out * expert_weights.unsqueeze(-1))
 
         importance = router_probs.mean(dim=0)
-        total_kept = max(kept_assignments, 1)
-        load = expert_counts / float(total_kept)
+        total_kept = expert_counts.sum().clamp_min(1.0)
+        load = expert_counts / total_kept
         aux_loss = self.num_experts * torch.sum(importance * load)
         z_loss = torch.mean(torch.logsumexp(router_logits, dim=-1).square())
 

@@ -73,16 +73,36 @@ class MoEFeedForward(nn.Module):
         kept_assignments = 0
         dropped_assignments = 0
 
+        # Flatten routing assignments once and group by expert with a single sort.
+        assign_tokens = (
+            torch.arange(total_tokens, device=x.device)
+            .unsqueeze(1)
+            .expand(total_tokens, self.top_k)
+            .reshape(-1)
+        )
+        assign_experts = topk_idx.reshape(-1)
+        assign_weights = topk_probs.reshape(-1)
+
+        order = torch.argsort(assign_experts)
+        sorted_experts = assign_experts[order]
+        sorted_tokens = assign_tokens[order]
+        sorted_weights = assign_weights[order]
+
+        counts = torch.bincount(sorted_experts, minlength=self.num_experts)
+        offsets = torch.cumsum(counts, dim=0)
+        starts = torch.cat([offsets.new_zeros(1), offsets[:-1]], dim=0)
+
         for expert_id in range(self.num_experts):
-            token_idx, route_idx = torch.where(topk_idx == expert_id)
-            n_assignments = token_idx.numel()
-            if n_assignments == 0:
+            start = int(starts[expert_id].item())
+            end = int(offsets[expert_id].item())
+            n_assignments = end - start
+            if n_assignments <= 0:
                 continue
 
-            n_kept = min(n_assignments, capacity)
-            kept_tokens = token_idx[:n_kept]
-            kept_routes = route_idx[:n_kept]
-            weights = topk_probs[kept_tokens, kept_routes]
+            keep_end = min(start + capacity, end)
+            kept_tokens = sorted_tokens[start:keep_end]
+            weights = sorted_weights[start:keep_end]
+            n_kept = keep_end - start
 
             expert_out = self.experts[expert_id](x_flat[kept_tokens])
             out_flat.index_add_(0, kept_tokens, expert_out * weights.unsqueeze(-1))

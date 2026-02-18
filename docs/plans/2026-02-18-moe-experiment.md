@@ -15,6 +15,11 @@ uv run python scripts/train.py --config configs/pretrain_100m.yaml
 uv run python scripts/train.py --config configs/pretrain_100m_moe.yaml
 ```
 
+### MoE fast (top-1) run
+```bash
+uv run python scripts/train.py --config configs/pretrain_100m_moe_fast.yaml
+```
+
 ### Go / No-Go to Stage B
 Proceed to 1B only if all are true:
 - `val_loss` improves by at least 1% vs dense baseline
@@ -29,6 +34,11 @@ Use existing 1B-equivalent dense config for your dataset/token budget.
 ### MoE run
 ```bash
 uv run python scripts/train.py --config configs/pretrain_1b_moe.yaml
+```
+
+### MoE fast (top-1) run
+```bash
+uv run python scripts/train.py --config configs/pretrain_1b_moe_fast.yaml
 ```
 
 ### Success criteria

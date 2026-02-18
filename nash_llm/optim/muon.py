@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from torch.optim import Optimizer
 from itertools import repeat
+from typing import Optional
 
 # Pre-computed Polar Express coefficients for ℓ=1e-3, u=1, degree-5.
 # From Amsel et al., "The Polar Express", 2025.
@@ -67,8 +68,46 @@ def orthogonalize(M: torch.Tensor, steps: int = 5) -> torch.Tensor:
     return polar_express(M, steps)
 
 
+def spectra_shape(
+    Z: torch.Tensor,
+    rank_ratio: float = 0.015,
+    n_iter: int = 1,
+    v_cache: Optional[torch.Tensor] = None,
+    eps: float = 1e-8,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Spike-aware shaping for stacked TEON momentums."""
+    if Z.ndim != 2:
+        raise ValueError(f"spectra_shape expects a 2D matrix, got shape {tuple(Z.shape)}")
+
+    m, two_n = Z.shape
+    r = min(m, two_n)
+    k = max(1, min(r, round(rank_ratio * r)))
+
+    if v_cache is not None and tuple(v_cache.shape) == (two_n, k):
+        V = v_cache.to(device=Z.device, dtype=Z.dtype)
+        for _ in range(n_iter):
+            P = Z @ V
+            U, _ = torch.linalg.qr(P, mode="reduced")
+            W = Z.mT @ U
+            s = W.norm(dim=0)
+            V = W / s.clamp_min(eps)
+        U_k, s_k, V_k = U, s, V
+    else:
+        U_k, s_k, V_k = torch.svd_lowrank(Z, q=k, niter=max(2, n_iter))
+
+    spike = (U_k * s_k.unsqueeze(0)) @ V_k.mT
+    Z_tail = Z - spike
+
+    denom = max(r - k, 1)
+    tail_energy = torch.sum(Z_tail * Z_tail)
+    sigma_tail = torch.sqrt(tail_energy / denom)
+
+    O = Z_tail + (U_k * sigma_tail) @ V_k.mT
+    return O, V_k.detach()
+
+
 class Muon(Optimizer):
-    """MUON/TEON optimizer with Polar Express orthogonalization.
+    """MUON/Spectra-TEON optimizer.
 
     Handles two types of parameter groups:
     - muon_params: per-layer orthogonalization (out_proj, MLP weights)
@@ -79,10 +118,10 @@ class Muon(Optimizer):
         O_t = Ortho(M_t)
         W_t = W_{t-1} - lr * sqrt(m/n) * O_t
 
-    Math (TEON per group of K params):
+    Math (Spectra-TEON per group of K params):
         Z = [M^(1) | M^(2) | ... | M^(K)]   (mode-1 matricization)
-        Q = Ortho(Z)
-        O^(k) = Q[:, k*n:(k+1)*n]            (split back)
+        O = SpectraShape(Z)
+        O^(k) = O[:, k*n:(k+1)*n]            (split back)
         W^(k)_t = W^(k)_{t-1} - lr * sqrt(m/n) * O^(k)
     """
 
@@ -94,7 +133,14 @@ class Muon(Optimizer):
         momentum: float = 0.95,
         weight_decay: float = 0.0,
         ns_steps: int = 5,
+        rank_ratio: float = 0.015,
+        n_iter: int = 1,
     ):
+        if not (0.0 < rank_ratio <= 1.0):
+            raise ValueError(f"Invalid rank_ratio '{rank_ratio}'. Expected 0 < rank_ratio <= 1.")
+        if n_iter < 1:
+            raise ValueError(f"Invalid n_iter '{n_iter}'. Expected n_iter >= 1.")
+
         # Flatten all params for Optimizer registration
         all_params: list[nn.Parameter] = []
         all_params.extend(muon_params)
@@ -106,6 +152,8 @@ class Muon(Optimizer):
             momentum=momentum,
             weight_decay=weight_decay,
             ns_steps=ns_steps,
+            rank_ratio=rank_ratio,
+            n_iter=n_iter,
         )
         super().__init__(all_params, defaults)
 
@@ -118,7 +166,7 @@ class Muon(Optimizer):
             key = (p.shape[0], p.shape[1])
             self._muon_shape_groups.setdefault(key, []).append(p)
 
-        # Pre-group TEON groups by (m, n, K) for batched orthogonalization
+        # Pre-group TEON groups by (m, n, K) for grouped Spectra shaping
         self._teon_shape_groups: dict[tuple[int, int, int], list[list[nn.Parameter]]] = {}
         for group in teon_params:
             if not group:
@@ -139,6 +187,8 @@ class Muon(Optimizer):
         mu = self.defaults["momentum"]
         wd = self.defaults["weight_decay"]
         ns_steps = self.defaults["ns_steps"]
+        rank_ratio = self.defaults["rank_ratio"]
+        n_iter = self.defaults["n_iter"]
 
         # --- MUON: batched per-shape orthogonalization ---
         # Phase 1: update all momentum buffers
@@ -173,7 +223,7 @@ class Muon(Optimizer):
                         p.data.mul_(1.0 - lr * wd)
                     p.data.add_(o, alpha=-lr * (m / n) ** 0.5)
 
-        # --- TEON: batched cross-layer stacking ---
+        # --- TEON: cross-layer stacking ---
         # Phase 1: update all TEON momentum buffers
         for group in self._teon_groups:
             for param in group:
@@ -185,8 +235,8 @@ class Muon(Optimizer):
                 buf = state["momentum_buffer"]
                 buf.mul_(mu).add_(param.grad, alpha=1.0 - mu)
 
-        # Phase 2: batched orthogonalization by (m, n, K)
-        for (m, n, K), groups in self._teon_shape_groups.items():
+        # Phase 2: Spectra-TEON by (m, n, K)
+        for (m, n, _), groups in self._teon_shape_groups.items():
             complete = []
             incomplete = []
             for group in groups:
@@ -195,21 +245,29 @@ class Muon(Optimizer):
                 else:
                     incomplete.append(group)
 
-            # Fast path: batch all complete groups
+            # Fast path: complete cross-layer groups use Spectra-TEON shaping
             if complete:
-                Z_list = []
+                scale = (m / n) ** 0.5
                 for group in complete:
                     momentums = [self.state[p]["momentum_buffer"] for p in group]
-                    Z_list.append(torch.cat(momentums, dim=1))
-                Z_batch = torch.stack(Z_list)
-                Q_batch = orthogonalize(Z_batch, ns_steps)
-                scale = (m / n) ** 0.5
-                for gi, group in enumerate(complete):
-                    ortho_slices = Q_batch[gi].split(n, dim=1)
+                    Z = torch.cat(momentums, dim=1)
+                    anchor = group[0]
+                    anchor_state = self.state[anchor]
+                    v_cache = anchor_state.get("v_cache")
+
+                    O, v_new = spectra_shape(
+                        Z,
+                        rank_ratio=rank_ratio,
+                        n_iter=n_iter,
+                        v_cache=v_cache,
+                    )
+                    anchor_state["v_cache"] = v_new
+                    shaped_slices = O.split(n, dim=1)
+
                     for i, param in enumerate(group):
                         if wd > 0:
                             param.data.mul_(1.0 - lr * wd)
-                        param.data.add_(ortho_slices[i], alpha=-lr * scale)
+                        param.data.add_(shaped_slices[i], alpha=-lr * scale)
 
             # Fallback: per-param MUON for incomplete groups
             for group in incomplete:

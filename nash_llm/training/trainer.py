@@ -75,6 +75,9 @@ class Trainer:
             muon_lr=config.train.muon_lr,
             muon_momentum=config.train.muon_momentum,
             ns_steps=config.train.ns_steps,
+            rank_ratio=config.train.rank_ratio,
+            n_iter=config.train.n_iter,
+            teon_k=config.train.teon_k,
             fused=use_fused_adamw,
         )
         # Keep self.optimizer pointing to the first optimizer for backward compat

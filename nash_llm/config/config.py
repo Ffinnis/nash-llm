@@ -30,6 +30,9 @@ class TrainConfig:
     muon_lr: float = 0.02
     muon_momentum: float = 0.95
     ns_steps: int = 5
+    rank_ratio: float = 0.015
+    n_iter: int = 1
+    teon_k: int = 2
 
 
 @dataclass
@@ -77,6 +80,18 @@ def _validate_train_precision(value: str) -> str:
     return precision
 
 
+def _validate_train_config(train: TrainConfig) -> None:
+    train.precision = _validate_train_precision(train.precision)
+    if not (0.0 < train.rank_ratio <= 1.0):
+        raise ValueError(
+            f"Invalid train.rank_ratio '{train.rank_ratio}'. Expected 0 < rank_ratio <= 1."
+        )
+    if train.n_iter < 1:
+        raise ValueError(f"Invalid train.n_iter '{train.n_iter}'. Expected n_iter >= 1.")
+    if train.teon_k < 1:
+        raise ValueError(f"Invalid train.teon_k '{train.teon_k}'. Expected teon_k >= 1.")
+
+
 def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
     for key, value in overrides.items():
         parts = key.split(".")
@@ -98,9 +113,8 @@ def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
             parsed = value.split(",")
         else:
             parsed = field_type(value)
-        if section_name == "train" and field_name == "precision":
-            parsed = _validate_train_precision(str(parsed))
         setattr(section, field_name, parsed)
+    _validate_train_config(cfg.train)
     return cfg
 
 
@@ -113,7 +127,7 @@ def load_config(config_path: str | None = None, overrides: dict[str, str] | None
             cfg.model = ModelConfig(**{**vars(cfg.model), **raw["model"]})
         if "train" in raw:
             cfg.train = TrainConfig(**{**vars(cfg.train), **raw["train"]})
-            cfg.train.precision = _validate_train_precision(cfg.train.precision)
+            _validate_train_config(cfg.train)
         if "data" in raw:
             cfg.data = DataConfig(**{**vars(cfg.data), **raw["data"]})
         if "metrics" in raw:

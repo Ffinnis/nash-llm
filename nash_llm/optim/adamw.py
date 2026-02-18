@@ -12,13 +12,16 @@ def configure_optimizers(
     muon_lr: float = 0.02,
     muon_momentum: float = 0.95,
     ns_steps: int = 5,
+    rank_ratio: float = 0.015,
+    n_iter: int = 1,
+    teon_k: int = 2,
     betas: tuple[float, float] = (0.9, 0.95),
     fused: bool | None = None,
 ) -> list[torch.optim.Optimizer]:
-    """Create TEON+AdamW optimizer pair.
+    """Create Muon(Spectra-TEON)+AdamW optimizer pair.
 
     Returns [Muon, AdamW]:
-    - Muon: TEON cross-layer Q/K/V stacking (K=2) + per-layer ortho for out_proj, MLP
+    - Muon: TEON cross-layer Q/K/V stacking (K=teon_k) + per-layer ortho for out_proj, MLP
     - AdamW: embeddings, layer norms, biases, and remaining params
     """
     muon_params: list[nn.Parameter] = []  # per-layer ortho (out_proj, MLP)
@@ -31,7 +34,10 @@ def configure_optimizers(
     muon_patterns = ("out_proj.weight", "fc1.weight", "fc2.weight")
     teon_patterns = ("q_proj.weight", "k_proj.weight", "v_proj.weight")
 
-    # Build TEON groups: stack K=2 consecutive blocks for each of Q/K/V
+    if teon_k < 1:
+        raise ValueError(f"Invalid teon_k '{teon_k}'. Expected teon_k >= 1.")
+
+    # Build TEON groups: stack K consecutive blocks for each of Q/K/V
     teon_by_type: dict[str, list[nn.Parameter]] = {p: [] for p in teon_patterns}
     for name, param in model.named_parameters():
         if not param.requires_grad:
@@ -42,7 +48,7 @@ def configure_optimizers(
                 muon_param_ids.add(id(param))
                 break
 
-    K = 2
+    K = teon_k
     for pattern in teon_patterns:
         params = teon_by_type[pattern]
         num_groups = len(params) // K
@@ -78,6 +84,8 @@ def configure_optimizers(
         momentum=muon_momentum,
         weight_decay=weight_decay,
         ns_steps=ns_steps,
+        rank_ratio=rank_ratio,
+        n_iter=n_iter,
     )
 
     # Build AdamW for remaining params

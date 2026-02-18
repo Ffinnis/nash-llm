@@ -135,3 +135,16 @@ class TestTrainer:
         history = trainer.train()
         assert len(history) == 5
         assert all(not np.isnan(h["train_loss"]) for h in history)
+
+    def test_spectra_teon_hparams_are_wired(self, tmp_path):
+        cfg = self._make_config(tmp_path)
+        cfg.train.max_steps = 3
+        cfg.train.rank_ratio = 0.02
+        cfg.train.n_iter = 2
+        cfg.train.teon_k = 2
+        ckpt_dir = str(tmp_path / "checkpoints")
+
+        trainer = Trainer(cfg, checkpoint_dir=ckpt_dir)
+        history = trainer.train()
+        assert len(history) == 3
+        assert all(not np.isnan(h["train_loss"]) for h in history)

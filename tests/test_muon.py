@@ -3,7 +3,7 @@ import pytest
 import torch.nn as nn
 from nash_llm.model import GPT
 from nash_llm.config import ModelConfig
-from nash_llm.optim.muon import _polar_express_impl, orthogonalize, Muon
+from nash_llm.optim.muon import _polar_express_impl, orthogonalize, spectra_shape, Muon
 from nash_llm.optim.adamw import configure_optimizers
 
 
@@ -60,6 +60,34 @@ class TestPolarExpress:
         eye = torch.eye(32)
         error = (product - eye).norm()
         assert error < 0.5, f"Orthogonality error {error:.4f}"
+
+
+class TestSpectraShape:
+    def test_spectra_shape_preserves_shape_and_reduces_spike(self):
+        torch.manual_seed(42)
+        Z = torch.randn(64, 128) * 0.05
+        u = torch.randn(64, 1)
+        v = torch.randn(1, 128)
+        Z = Z + 20.0 * (u @ v)
+
+        top_before = torch.linalg.svdvals(Z.float())[0]
+        O, _ = spectra_shape(Z, rank_ratio=0.05, n_iter=2)
+        top_after = torch.linalg.svdvals(O.float())[0]
+
+        assert O.shape == Z.shape
+        assert top_after < top_before
+
+    def test_spectra_shape_warm_start_cache(self):
+        torch.manual_seed(42)
+        Z = torch.randn(64, 128)
+
+        O1, v1 = spectra_shape(Z, rank_ratio=0.05, n_iter=1)
+        O2, v2 = spectra_shape(Z, rank_ratio=0.05, n_iter=1, v_cache=v1)
+
+        assert O1.shape == Z.shape
+        assert O2.shape == Z.shape
+        assert v2.shape == v1.shape
+        assert v2.requires_grad is False
 
 
 class TestMuonOptimizer:
@@ -173,6 +201,20 @@ class TestTEONStacking:
         assert p1.shape == (32, 64)
         assert p2.shape == (32, 64)
 
+    def test_teon_stores_v_cache_on_anchor_param(self):
+        torch.manual_seed(42)
+        p1 = nn.Parameter(torch.randn(64, 128))
+        p2 = nn.Parameter(torch.randn(64, 128))
+
+        opt = Muon(muon_params=[], teon_params=[[p1, p2]], lr=0.02, momentum=0.95, ns_steps=5)
+        p1.grad = torch.randn_like(p1)
+        p2.grad = torch.randn_like(p2)
+        opt.step()
+
+        assert "v_cache" in opt.state[p1]
+        assert "v_cache" not in opt.state[p2]
+        assert opt.state[p1]["v_cache"].ndim == 2
+
 
 class TestConfigureOptimizers:
     def setup_method(self):
@@ -262,6 +304,26 @@ class TestConfigureOptimizers:
             ("blocks.2.attn.v_proj.weight", "blocks.3.attn.v_proj.weight"),
         ]
         assert group_names == expected
+
+    def test_teon_k_controls_grouping_and_remainders(self):
+        opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1, teon_k=3)
+        muon_opt = opts[0]
+        assert isinstance(muon_opt, Muon)
+
+        for group in muon_opt._teon_groups:
+            assert len(group) == 3
+
+        qkv_param_ids = {
+            id(p)
+            for name, p in self.model.named_parameters()
+            if any(pat in name for pat in ["q_proj.weight", "k_proj.weight", "v_proj.weight"])
+        }
+        teon_param_ids = {id(p) for group in muon_opt._teon_groups for p in group}
+        muon_param_ids = {id(p) for p in muon_opt._muon_params}
+
+        remainder_ids = qkv_param_ids - teon_param_ids
+        assert len(remainder_ids) == 3
+        assert remainder_ids.issubset(muon_param_ids)
 
 
 class TestAttentionSplitQKV:

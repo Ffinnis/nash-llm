@@ -38,6 +38,9 @@ class TestTrainConfig:
         assert cfg.muon_lr == 0.02
         assert cfg.muon_momentum == 0.95
         assert cfg.ns_steps == 5
+        assert cfg.rank_ratio == 0.015
+        assert cfg.n_iter == 1
+        assert cfg.teon_k == 2
 
     def test_custom(self):
         cfg = TrainConfig(learning_rate=1e-4, batch_size=32)
@@ -100,11 +103,21 @@ class TestLoadConfig:
         assert cfg.train.precision == "fp16"
 
     def test_cli_overrides_without_yaml(self):
-        overrides = {"model.n_layers": "6", "train.batch_size": "32", "precision": "fp16"}
+        overrides = {
+            "model.n_layers": "6",
+            "train.batch_size": "32",
+            "precision": "fp16",
+            "rank_ratio": "0.02",
+            "n_iter": "2",
+            "teon_k": "3",
+        }
         cfg = load_config(config_path=None, overrides=overrides)
         assert cfg.model.n_layers == 6
         assert cfg.train.batch_size == 32
         assert cfg.train.precision == "fp16"
+        assert cfg.train.rank_ratio == 0.02
+        assert cfg.train.n_iter == 2
+        assert cfg.train.teon_k == 3
 
     def test_invalid_precision_override_raises(self):
         with pytest.raises(ValueError, match="Unsupported train.precision"):
@@ -117,9 +130,30 @@ class TestLoadConfig:
         with pytest.raises(ValueError, match="Unsupported train.precision"):
             load_config(str(yaml_path))
 
+    def test_invalid_rank_ratio_raises(self):
+        with pytest.raises(ValueError, match="train.rank_ratio"):
+            load_config(config_path=None, overrides={"rank_ratio": "0"})
+
+    def test_invalid_n_iter_raises(self):
+        with pytest.raises(ValueError, match="train.n_iter"):
+            load_config(config_path=None, overrides={"n_iter": "0"})
+
+    def test_invalid_teon_k_raises(self):
+        with pytest.raises(ValueError, match="train.teon_k"):
+            load_config(config_path=None, overrides={"teon_k": "0"})
+
     def test_muon_lr_yaml(self, tmp_path):
         yaml_content = {"train": {"muon_lr": 0.03}}
         yaml_path = tmp_path / "test.yaml"
         yaml_path.write_text(yaml.dump(yaml_content))
         cfg = load_config(str(yaml_path))
         assert cfg.train.muon_lr == 0.03
+
+    def test_spectra_fields_yaml(self, tmp_path):
+        yaml_content = {"train": {"rank_ratio": 0.03, "n_iter": 3, "teon_k": 4}}
+        yaml_path = tmp_path / "test.yaml"
+        yaml_path.write_text(yaml.dump(yaml_content))
+        cfg = load_config(str(yaml_path))
+        assert cfg.train.rank_ratio == 0.03
+        assert cfg.train.n_iter == 3
+        assert cfg.train.teon_k == 4

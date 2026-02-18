@@ -66,8 +66,7 @@ class Trainer:
 
         self.model = GPT(config.model).to(self.device)
 
-        # Fused AdamW can be numerically brittle in some bf16 stacks; keep it for fp16 path only.
-        use_fused_adamw = self.device.type == "cuda" and config.train.precision == "fp16"
+        # AdamW path uses custom NesterovAdamW, so fused kernels are intentionally disabled.
         self.optimizers = configure_optimizers(
             self.model,
             optimizer_type=config.train.optimizer,
@@ -76,7 +75,7 @@ class Trainer:
             muon_lr=config.train.muon_lr,
             muon_momentum=config.train.muon_momentum,
             ns_steps=config.train.ns_steps,
-            fused=use_fused_adamw,
+            fused=False,
         )
         # Keep self.optimizer pointing to the first optimizer for backward compat
         self.optimizer = self.optimizers[0]

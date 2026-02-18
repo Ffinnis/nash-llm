@@ -22,9 +22,14 @@ def _build_nadam(
     lr: float,
     betas: tuple[float, float],
 ) -> torch.optim.NAdam:
-    """Build NAdam with decoupled weight decay (= Nesterov AdamW)."""
+    """Build NAdam with decoupled weight decay (= Nesterov AdamW).
+
+    momentum_decay is set very high to disable the Dozat (2016) mu-schedule
+    and use a fixed beta1 for the Nesterov correction at every step.
+    """
     return torch.optim.NAdam(
-        param_groups, lr=lr, betas=betas, decoupled_weight_decay=True, foreach=True,
+        param_groups, lr=lr, betas=betas,
+        decoupled_weight_decay=True, momentum_decay=1e4, foreach=True,
     )
 
 

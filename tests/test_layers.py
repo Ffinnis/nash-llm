@@ -64,6 +64,6 @@ class TestMoEFeedForward:
 
         x = torch.randn(4, 16, 32)
         _ = moe(x)
-        dropped = moe.last_moe_metrics["dropped_frac"]
+        dropped = float(moe.last_moe_metrics["dropped_frac"])
         assert 0.0 <= dropped <= 1.0
         assert dropped > 0.0

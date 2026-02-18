@@ -23,7 +23,7 @@ class TransformerBlock(nn.Module):
         else:
             self.ff = FeedForward(config)
 
-        self.last_moe_metrics: dict[str, float] | None = None
+        self.last_moe_metrics: dict[str, torch.Tensor] | None = None
         self.last_aux_loss: torch.Tensor | None = None
         self.last_z_loss: torch.Tensor | None = None
 
@@ -58,11 +58,11 @@ class GPT(nn.Module):
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         self.lm_head.weight = self.token_emb.weight
 
-        self.last_moe_metrics: dict[str, float] = {
-            "aux_loss": 0.0,
-            "z_loss": 0.0,
-            "dropped_frac": 0.0,
-            "expert_entropy": 0.0,
+        self.last_moe_metrics: dict[str, torch.Tensor] = {
+            "aux_loss": torch.tensor(0.0),
+            "z_loss": torch.tensor(0.0),
+            "dropped_frac": torch.tensor(0.0),
+            "expert_entropy": torch.tensor(0.0),
         }
         self._last_moe_aux_loss: torch.Tensor | None = None
         self._last_moe_z_loss: torch.Tensor | None = None
@@ -88,7 +88,7 @@ class GPT(nn.Module):
 
         block_aux_losses: list[torch.Tensor] = []
         block_z_losses: list[torch.Tensor] = []
-        block_metrics: list[dict[str, float]] = []
+        block_metrics: list[dict[str, torch.Tensor]] = []
         for block in self.blocks:
             x = block(x)
             if block.last_aux_loss is not None and block.last_z_loss is not None and block.last_moe_metrics is not None:
@@ -100,20 +100,20 @@ class GPT(nn.Module):
             self._last_moe_aux_loss = torch.stack(block_aux_losses).mean()
             self._last_moe_z_loss = torch.stack(block_z_losses).mean()
             self.last_moe_metrics = {
-                "aux_loss": float(self._last_moe_aux_loss.detach().item()),
-                "z_loss": float(self._last_moe_z_loss.detach().item()),
-                "dropped_frac": sum(m["dropped_frac"] for m in block_metrics) / len(block_metrics),
-                "expert_entropy": sum(m["expert_entropy"] for m in block_metrics) / len(block_metrics),
+                "aux_loss": self._last_moe_aux_loss.detach(),
+                "z_loss": self._last_moe_z_loss.detach(),
+                "dropped_frac": torch.stack([m["dropped_frac"] for m in block_metrics]).mean().detach(),
+                "expert_entropy": torch.stack([m["expert_entropy"] for m in block_metrics]).mean().detach(),
             }
         else:
             zero = x.new_zeros(())
             self._last_moe_aux_loss = zero
             self._last_moe_z_loss = zero
             self.last_moe_metrics = {
-                "aux_loss": 0.0,
-                "z_loss": 0.0,
-                "dropped_frac": 0.0,
-                "expert_entropy": 0.0,
+                "aux_loss": zero.detach(),
+                "z_loss": zero.detach(),
+                "dropped_frac": zero.detach(),
+                "expert_entropy": zero.detach(),
             }
 
         x = self.ln_f(x)

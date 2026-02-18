@@ -43,11 +43,11 @@ class MoEFeedForward(nn.Module):
 
         self.last_aux_loss: torch.Tensor | None = None
         self.last_z_loss: torch.Tensor | None = None
-        self.last_moe_metrics: dict[str, float] = {
-            "aux_loss": 0.0,
-            "z_loss": 0.0,
-            "dropped_frac": 0.0,
-            "expert_entropy": 0.0,
+        self.last_moe_metrics: dict[str, torch.Tensor] = {
+            "aux_loss": torch.tensor(0.0),
+            "z_loss": torch.tensor(0.0),
+            "dropped_frac": torch.tensor(0.0),
+            "expert_entropy": torch.tensor(0.0),
         }
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -70,8 +70,6 @@ class MoEFeedForward(nn.Module):
 
         out_flat = torch.zeros_like(x_flat)
         expert_counts = torch.zeros(self.num_experts, device=x.device, dtype=torch.float32)
-        kept_assignments = 0
-        dropped_assignments = 0
 
         # Flatten routing assignments once and group by expert with a single sort.
         assign_tokens = (
@@ -89,27 +87,25 @@ class MoEFeedForward(nn.Module):
         sorted_weights = assign_weights[order]
 
         counts = torch.bincount(sorted_experts, minlength=self.num_experts)
-        offsets = torch.cumsum(counts, dim=0)
-        starts = torch.cat([offsets.new_zeros(1), offsets[:-1]], dim=0)
+        starts = torch.cumsum(counts, dim=0) - counts
+        positions = torch.arange(sorted_experts.numel(), device=x.device)
+        rank_within_expert = positions - starts[sorted_experts]
+        keep_mask = rank_within_expert < capacity
+
+        kept_tokens = sorted_tokens[keep_mask]
+        kept_experts = sorted_experts[keep_mask]
+        kept_weights = sorted_weights[keep_mask]
+
+        kept_counts = torch.bincount(kept_experts, minlength=self.num_experts)
+        expert_counts = kept_counts.to(torch.float32)
+        dropped_assignments = (counts - kept_counts).sum().to(torch.float32)
 
         for expert_id in range(self.num_experts):
-            start = int(starts[expert_id].item())
-            end = int(offsets[expert_id].item())
-            n_assignments = end - start
-            if n_assignments <= 0:
-                continue
-
-            keep_end = min(start + capacity, end)
-            kept_tokens = sorted_tokens[start:keep_end]
-            weights = sorted_weights[start:keep_end]
-            n_kept = keep_end - start
-
-            expert_out = self.experts[expert_id](x_flat[kept_tokens])
-            out_flat.index_add_(0, kept_tokens, expert_out * weights.unsqueeze(-1))
-
-            expert_counts[expert_id] = float(n_kept)
-            kept_assignments += n_kept
-            dropped_assignments += n_assignments - n_kept
+            expert_mask = kept_experts == expert_id
+            expert_tokens = kept_tokens[expert_mask]
+            expert_weights = kept_weights[expert_mask]
+            expert_out = self.experts[expert_id](x_flat[expert_tokens])
+            out_flat.index_add_(0, expert_tokens, expert_out * expert_weights.unsqueeze(-1))
 
         importance = router_probs.mean(dim=0)
         total_kept = max(kept_assignments, 1)
@@ -117,17 +113,20 @@ class MoEFeedForward(nn.Module):
         aux_loss = self.num_experts * torch.sum(importance * load)
         z_loss = torch.mean(torch.logsumexp(router_logits, dim=-1).square())
 
-        dropped_frac = float(dropped_assignments) / float(total_assignments)
+        dropped_frac = dropped_assignments / float(total_assignments)
         load_dist = expert_counts / expert_counts.sum().clamp_min(1.0)
         entropy = -torch.sum(load_dist * torch.log(load_dist.clamp_min(1e-9)))
-        expert_entropy = float((entropy / math.log(self.num_experts)).item()) if self.num_experts > 1 else 0.0
+        if self.num_experts > 1:
+            expert_entropy = entropy / math.log(self.num_experts)
+        else:
+            expert_entropy = entropy.new_zeros(())
 
         self.last_aux_loss = aux_loss
         self.last_z_loss = z_loss
         self.last_moe_metrics = {
-            "aux_loss": float(aux_loss.detach().item()),
-            "z_loss": float(z_loss.detach().item()),
-            "dropped_frac": dropped_frac,
-            "expert_entropy": expert_entropy,
+            "aux_loss": aux_loss.detach(),
+            "z_loss": z_loss.detach(),
+            "dropped_frac": dropped_frac.detach(),
+            "expert_entropy": expert_entropy.detach(),
         }
         return out_flat.view(bsz, seq_len, dim)

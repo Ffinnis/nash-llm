@@ -92,10 +92,10 @@ class TestGPT:
         assert "z_loss" in metrics
         assert "dropped_frac" in metrics
         assert "expert_entropy" in metrics
-        assert metrics["aux_loss"] >= 0.0
-        assert metrics["z_loss"] >= 0.0
-        assert 0.0 <= metrics["dropped_frac"] <= 1.0
-        assert 0.0 <= metrics["expert_entropy"] <= 1.0
+        assert float(metrics["aux_loss"]) >= 0.0
+        assert float(metrics["z_loss"]) >= 0.0
+        assert 0.0 <= float(metrics["dropped_frac"]) <= 1.0
+        assert 0.0 <= float(metrics["expert_entropy"]) <= 1.0
 
         aux_loss, z_loss = model.get_moe_losses()
         assert aux_loss.ndim == 0

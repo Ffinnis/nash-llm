@@ -18,6 +18,12 @@ from nash_llm.config import NashConfig
 
 class Trainer:
     @staticmethod
+    def _as_float(value: float | torch.Tensor) -> float:
+        if isinstance(value, torch.Tensor):
+            return float(value.detach().item())
+        return float(value)
+
+    @staticmethod
     def _cuda_supports_bf16() -> bool:
         is_bf16_supported = getattr(torch.cuda, "is_bf16_supported", None)
         if callable(is_bf16_supported):
@@ -284,8 +290,8 @@ class Trainer:
                     {
                         "moe_aux_loss": moe_aux_value,
                         "moe_z_loss": moe_z_value,
-                        "moe_dropped_frac": self.model.last_moe_metrics["dropped_frac"],
-                        "moe_expert_entropy": self.model.last_moe_metrics["expert_entropy"],
+                        "moe_dropped_frac": self._as_float(self.model.last_moe_metrics["dropped_frac"]),
+                        "moe_expert_entropy": self._as_float(self.model.last_moe_metrics["expert_entropy"]),
                     }
                 )
 
@@ -296,8 +302,8 @@ class Trainer:
                         {
                             "moe_aux_loss": moe_aux_value,
                             "moe_z_loss": moe_z_value,
-                            "moe_dropped_frac": self.model.last_moe_metrics["dropped_frac"],
-                            "moe_expert_entropy": self.model.last_moe_metrics["expert_entropy"],
+                            "moe_dropped_frac": self._as_float(self.model.last_moe_metrics["dropped_frac"]),
+                            "moe_expert_entropy": self._as_float(self.model.last_moe_metrics["expert_entropy"]),
                         }
                     )
                 self.logger.log(train_metrics, step=step)

@@ -179,26 +179,15 @@ class TestConfigureOptimizers:
         self.cfg = ModelConfig(n_layers=4, n_heads=4, d_model=64, d_ff=256, vocab_size=100, max_seq_len=32, dropout=0.0)
         self.model = GPT(self.cfg)
 
-    def test_adamw_returns_single_optimizer(self):
-        opts = configure_optimizers(self.model, "adamw", lr=3e-4, weight_decay=0.1)
-        assert len(opts) == 1
-        assert isinstance(opts[0], torch.optim.AdamW)
-
-    def test_muon_returns_two_optimizers(self):
-        opts = configure_optimizers(self.model, "muon", lr=3e-4, weight_decay=0.1)
-        assert len(opts) == 2
-        assert isinstance(opts[0], Muon)
-        assert isinstance(opts[1], torch.optim.AdamW)
-
-    def test_teon_returns_two_optimizers(self):
-        opts = configure_optimizers(self.model, "teon", lr=3e-4, weight_decay=0.1)
+    def test_returns_two_optimizers(self):
+        opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1)
         assert len(opts) == 2
         assert isinstance(opts[0], Muon)
         assert isinstance(opts[1], torch.optim.AdamW)
 
     def test_all_params_assigned(self):
         """Every trainable param should belong to exactly one optimizer."""
-        opts = configure_optimizers(self.model, "teon", lr=3e-4, weight_decay=0.1)
+        opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1)
 
         opt_param_ids = set()
         for opt in opts:
@@ -211,7 +200,7 @@ class TestConfigureOptimizers:
 
     def test_no_param_in_both_optimizers(self):
         """No param should be in both Muon and AdamW."""
-        opts = configure_optimizers(self.model, "teon", lr=3e-4, weight_decay=0.1)
+        opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1)
 
         muon_ids = set()
         for pg in opts[0].param_groups:
@@ -228,7 +217,7 @@ class TestConfigureOptimizers:
 
     def test_teon_has_qkv_params(self):
         """TEON groups should contain q_proj, k_proj, v_proj weights."""
-        opts = configure_optimizers(self.model, "teon", lr=3e-4, weight_decay=0.1)
+        opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1)
         muon_opt = opts[0]
         assert isinstance(muon_opt, Muon)
 
@@ -246,7 +235,7 @@ class TestConfigureOptimizers:
 
     def test_teon_groups_have_k2(self):
         """Each TEON group should have K=2 params."""
-        opts = configure_optimizers(self.model, "teon", lr=3e-4, weight_decay=0.1)
+        opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1)
         muon_opt = opts[0]
         assert isinstance(muon_opt, Muon)
 
@@ -255,7 +244,7 @@ class TestConfigureOptimizers:
 
     def test_teon_group_order_is_deterministic(self):
         """TEON groups must be in a stable Q->K->V order for state_dict compatibility."""
-        opts = configure_optimizers(self.model, "teon", lr=3e-4, weight_decay=0.1)
+        opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1)
         muon_opt = opts[0]
         assert isinstance(muon_opt, Muon)
         name_by_id = {id(p): name for name, p in self.model.named_parameters()}

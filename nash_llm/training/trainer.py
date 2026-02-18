@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from typing import Any
 
 from nash_llm.model import GPT
-from nash_llm.optim import configure_optimizer, configure_optimizers
+from nash_llm.optim import configure_optimizers
 from nash_llm.data.dataset import PretrainDataset
 from nash_llm.training.scheduler import CosineScheduler
 from nash_llm.training.checkpoint import save_checkpoint
@@ -64,13 +64,12 @@ class Trainer:
             config.train.precision,
         )
 
-        self.model = GPT(config.model).to(self.device)
+        self.model: GPT = GPT(config.model).to(self.device)
 
         # Fused AdamW can be numerically brittle in some bf16 stacks; keep it for fp16 path only.
         use_fused_adamw = self.device.type == "cuda" and config.train.precision == "fp16"
         self.optimizers = configure_optimizers(
             self.model,
-            optimizer_type=config.train.optimizer,
             lr=config.train.learning_rate,
             weight_decay=config.train.weight_decay,
             muon_lr=config.train.muon_lr,
@@ -87,15 +86,11 @@ class Trainer:
             max_lr=config.train.learning_rate, min_lr=min_lr,
             warmup_steps=scheduler_warmup_steps, max_steps=self.train_max_steps,
         )
-        # Separate scheduler for muon_lr when using muon/teon
-        if config.train.optimizer in {"muon", "teon"}:
-            muon_min_lr = config.train.muon_lr / 10
-            self.muon_scheduler = CosineScheduler(
-                max_lr=config.train.muon_lr, min_lr=muon_min_lr,
-                warmup_steps=scheduler_warmup_steps, max_steps=self.train_max_steps,
-            )
-        else:
-            self.muon_scheduler = None
+        muon_min_lr = config.train.muon_lr / 10
+        self.muon_scheduler = CosineScheduler(
+            max_lr=config.train.muon_lr, min_lr=muon_min_lr,
+            warmup_steps=scheduler_warmup_steps, max_steps=self.train_max_steps,
+        )
 
         self.train_dataset = PretrainDataset(config.data.tokenized_dir, split="train", seq_len=config.model.max_seq_len)
         self.val_dataset = PretrainDataset(config.data.tokenized_dir, split="val", seq_len=config.model.max_seq_len)
@@ -123,7 +118,7 @@ class Trainer:
         self.val_loader = DataLoader(self.val_dataset, **val_loader_kwargs)
 
         self.logger = MetricsLogger(config.metrics, run_config=asdict(config))
-        self.scaler = torch.amp.GradScaler("cuda", enabled=True) if self.use_grad_scaler else None
+        self.scaler = torch.cuda.amp.GradScaler(enabled=True) if self.use_grad_scaler else None
 
         self.start_step = 0
         self.best_val_loss = float("inf")
@@ -132,7 +127,7 @@ class Trainer:
             self._resume(resume_from)
 
         if config.train.compile and torch.cuda.is_available():
-            self.model = torch.compile(self.model)
+            self.model = torch.compile(self.model)  # type: ignore[assignment]
 
     def _resume(self, path: str):
         from nash_llm.training.checkpoint import load_checkpoint
@@ -143,16 +138,12 @@ class Trainer:
 
     def _set_lr(self, step: int):
         lr = self.scheduler.get_lr(step)
-        if self.muon_scheduler is not None:
-            # Muon optimizer is first, AdamW is second
-            muon_lr = self.muon_scheduler.get_lr(step)
-            for pg in self.optimizers[0].param_groups:
-                pg["lr"] = muon_lr
-            for pg in self.optimizers[1].param_groups:
-                pg["lr"] = lr
-        else:
-            for pg in self.optimizer.param_groups:
-                pg["lr"] = lr
+        # Muon optimizer is first, AdamW is second
+        muon_lr = self.muon_scheduler.get_lr(step)
+        for pg in self.optimizers[0].param_groups:
+            pg["lr"] = muon_lr
+        for pg in self.optimizers[1].param_groups:
+            pg["lr"] = lr
         return lr
 
     @staticmethod
@@ -239,7 +230,7 @@ class Trainer:
                 }
                 if self.amp_dtype is not None:
                     autocast_kwargs["dtype"] = self.amp_dtype
-                with torch.amp.autocast(**autocast_kwargs):
+                with torch.autocast(**autocast_kwargs):  # type: ignore[attr-defined]
                     _, loss = self.model(x, y)
                     loss = loss / micro_steps_target
 

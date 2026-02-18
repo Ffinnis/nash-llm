@@ -20,6 +20,9 @@ train:
   grad_accum_steps: 4
   compile: true
   precision: bf16
+  muon_lr: 0.02
+  muon_momentum: 0.95
+  ns_steps: 5
 
 data:
   dataset: openwebtext

@@ -83,3 +83,40 @@ class TestCheckpoint:
 
         with pytest.raises(ValueError, match="single optimizer state"):
             load_checkpoint(path, model2, optimizers)
+
+    def test_roundtrip_with_moe_model(self, tmp_path):
+        moe_cfg = ModelConfig(
+            n_layers=4,
+            n_heads=4,
+            d_model=64,
+            d_ff=256,
+            vocab_size=100,
+            max_seq_len=32,
+            dropout=0.0,
+            moe_enabled=True,
+            moe_num_experts=4,
+            moe_top_k=2,
+            moe_expert_d_ff=64,
+            moe_start_layer=0,
+            moe_layer_stride=1,
+        )
+        model = GPT(moe_cfg)
+        optimizers = configure_optimizers(model, lr=3e-4, weight_decay=0.1)
+
+        path = str(tmp_path / "ckpt_moe.pt")
+        x = torch.randint(0, 100, (1, 8))
+        targets = torch.randint(0, 100, (1, 8))
+        _, loss = model(x, targets)
+        loss.backward()
+        for opt in optimizers:
+            opt.step()
+
+        save_checkpoint(path, model, optimizers, step=7, config=NashConfig(model=moe_cfg))
+
+        model2 = GPT(moe_cfg)
+        optimizers2 = configure_optimizers(model2, lr=3e-4, weight_decay=0.1)
+        ckpt = load_checkpoint(path, model2, optimizers2)
+
+        assert ckpt["step"] == 7
+        for p1, p2 in zip(model.parameters(), model2.parameters()):
+            assert torch.allclose(p1, p2)

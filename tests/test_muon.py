@@ -263,6 +263,66 @@ class TestConfigureOptimizers:
         ]
         assert group_names == expected
 
+    def test_router_params_in_adamw_without_decay(self):
+        cfg = ModelConfig(
+            n_layers=4,
+            n_heads=4,
+            d_model=64,
+            d_ff=256,
+            vocab_size=100,
+            max_seq_len=32,
+            dropout=0.0,
+            moe_enabled=True,
+            moe_num_experts=4,
+            moe_top_k=2,
+            moe_expert_d_ff=64,
+            moe_start_layer=0,
+            moe_layer_stride=1,
+        )
+        model = GPT(cfg)
+        opts = configure_optimizers(model, lr=3e-4, weight_decay=0.1)
+
+        muon_ids = {id(p) for pg in opts[0].param_groups for p in pg["params"]}
+        adamw_decay_by_id = {
+            id(p): pg["weight_decay"] for pg in opts[1].param_groups for p in pg["params"]
+        }
+
+        router_ids = {
+            id(p) for name, p in model.named_parameters() if "router." in name and p.requires_grad
+        }
+        assert router_ids, "Expected router params in MoE model"
+        assert not (router_ids & muon_ids), "Router params should not be in Muon"
+        assert all(pid in adamw_decay_by_id for pid in router_ids), "Router params must be in AdamW"
+        assert all(adamw_decay_by_id[pid] == 0.0 for pid in router_ids), "Router params must be no_decay"
+
+    def test_expert_fc_weights_in_muon(self):
+        cfg = ModelConfig(
+            n_layers=4,
+            n_heads=4,
+            d_model=64,
+            d_ff=256,
+            vocab_size=100,
+            max_seq_len=32,
+            dropout=0.0,
+            moe_enabled=True,
+            moe_num_experts=4,
+            moe_top_k=2,
+            moe_expert_d_ff=64,
+            moe_start_layer=0,
+            moe_layer_stride=1,
+        )
+        model = GPT(cfg)
+        opts = configure_optimizers(model, lr=3e-4, weight_decay=0.1)
+        muon_ids = {id(p) for pg in opts[0].param_groups for p in pg["params"]}
+
+        expert_fc_ids = {
+            id(p)
+            for name, p in model.named_parameters()
+            if ".ff.experts." in name and ("fc1.weight" in name or "fc2.weight" in name)
+        }
+        assert expert_fc_ids, "Expected expert fc weights in MoE model"
+        assert expert_fc_ids <= muon_ids, "Expert fc weights should be assigned to Muon"
+
 
 class TestAttentionSplitQKV:
     def test_output_shape_preserved(self):

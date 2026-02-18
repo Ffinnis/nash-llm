@@ -11,6 +11,14 @@ class ModelConfig:
     vocab_size: int = 50257
     max_seq_len: int = 1024
     dropout: float = 0.1
+    moe_enabled: bool = False
+    moe_num_experts: int = 8
+    moe_top_k: int = 2
+    moe_expert_d_ff: int = 1536
+    moe_capacity_factor: float = 1.25
+    moe_router_jitter: float = 0.01
+    moe_start_layer: int = 6
+    moe_layer_stride: int = 2
 
 
 @dataclass
@@ -30,6 +38,8 @@ class TrainConfig:
     muon_lr: float = 0.02
     muon_momentum: float = 0.95
     ns_steps: int = 5
+    moe_aux_loss_coef: float = 0.01
+    moe_z_loss_coef: float = 1e-4
 
 
 @dataclass
@@ -77,6 +87,25 @@ def _validate_train_precision(value: str) -> str:
     return precision
 
 
+def _validate_model_moe_config(cfg: ModelConfig) -> None:
+    if not cfg.moe_enabled:
+        return
+    if cfg.moe_top_k < 1 or cfg.moe_top_k > cfg.moe_num_experts:
+        raise ValueError(
+            f"Invalid model.moe_top_k={cfg.moe_top_k}. "
+            f"Expected 1 <= moe_top_k <= moe_num_experts ({cfg.moe_num_experts})."
+        )
+    if cfg.moe_expert_d_ff <= 0:
+        raise ValueError(f"Invalid model.moe_expert_d_ff={cfg.moe_expert_d_ff}. Expected > 0.")
+    if cfg.moe_layer_stride < 1:
+        raise ValueError(f"Invalid model.moe_layer_stride={cfg.moe_layer_stride}. Expected >= 1.")
+    if cfg.moe_start_layer < 0 or cfg.moe_start_layer >= cfg.n_layers:
+        raise ValueError(
+            f"Invalid model.moe_start_layer={cfg.moe_start_layer}. "
+            f"Expected 0 <= moe_start_layer < n_layers ({cfg.n_layers})."
+        )
+
+
 def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
     for key, value in overrides.items():
         parts = key.split(".")
@@ -111,6 +140,7 @@ def load_config(config_path: str | None = None, overrides: dict[str, str] | None
             raw = yaml.safe_load(f) or {}
         if "model" in raw:
             cfg.model = ModelConfig(**{**vars(cfg.model), **raw["model"]})
+            _validate_model_moe_config(cfg.model)
         if "train" in raw:
             cfg.train = TrainConfig(**{**vars(cfg.train), **raw["train"]})
             cfg.train.precision = _validate_train_precision(cfg.train.precision)
@@ -120,4 +150,5 @@ def load_config(config_path: str | None = None, overrides: dict[str, str] | None
             cfg.metrics = MetricsConfig(**{**vars(cfg.metrics), **raw["metrics"]})
     if overrides:
         _apply_overrides(cfg, overrides)
+    _validate_model_moe_config(cfg.model)
     return cfg

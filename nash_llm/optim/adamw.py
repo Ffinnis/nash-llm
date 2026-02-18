@@ -30,6 +30,7 @@ def configure_optimizers(
 
     muon_patterns = ("out_proj.weight", "fc1.weight", "fc2.weight")
     teon_patterns = ("q_proj.weight", "k_proj.weight", "v_proj.weight")
+    router_patterns = ("router.weight", "router.bias")
 
     # Build TEON groups: stack K=2 consecutive blocks for each of Q/K/V
     teon_by_type: dict[str, list[nn.Parameter]] = {p: [] for p in teon_patterns}
@@ -56,6 +57,9 @@ def configure_optimizers(
     # Collect MUON per-layer params (out_proj, fc1, fc2) + remaining to AdamW
     for name, param in model.named_parameters():
         if not param.requires_grad or id(param) in muon_param_ids:
+            continue
+        if any(pattern in name for pattern in router_patterns):
+            adamw_no_decay.append(param)
             continue
         matched = False
         for pattern in muon_patterns:

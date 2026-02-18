@@ -204,6 +204,9 @@ class Trainer:
             for opt in self.optimizers:
                 opt.zero_grad(set_to_none=True)
             accum_loss = torch.zeros((), device=self.device)
+            accum_lm_loss = torch.zeros((), device=self.device)
+            accum_moe_aux = torch.zeros((), device=self.device)
+            accum_moe_z = torch.zeros((), device=self.device)
             tokens_processed = 0
             remaining_token_budget = cfg.max_tokens - total_tokens_processed if cfg.max_tokens > 0 else 0
             micro_steps_target = cfg.grad_accum_steps
@@ -231,8 +234,14 @@ class Trainer:
                 if self.amp_dtype is not None:
                     autocast_kwargs["dtype"] = self.amp_dtype
                 with torch.autocast(**autocast_kwargs):  # type: ignore[attr-defined]
-                    _, loss = self.model(x, y)
-                    loss = loss / micro_steps_target
+                    _, lm_loss = self.model(x, y)
+                    moe_aux_loss, moe_z_loss = self.model.get_moe_losses()
+                    total_loss = (
+                        lm_loss
+                        + cfg.moe_aux_loss_coef * moe_aux_loss
+                        + cfg.moe_z_loss_coef * moe_z_loss
+                    )
+                    loss = total_loss / micro_steps_target
 
                 if self.use_grad_scaler:
                     assert self.scaler is not None
@@ -240,6 +249,9 @@ class Trainer:
                 else:
                     loss.backward()
                 accum_loss += loss.detach()
+                accum_lm_loss += (lm_loss / micro_steps_target).detach()
+                accum_moe_aux += (moe_aux_loss / micro_steps_target).detach()
+                accum_moe_z += (moe_z_loss / micro_steps_target).detach()
 
             if cfg.grad_clip > 0:
                 if self.use_grad_scaler:
@@ -262,11 +274,32 @@ class Trainer:
             tokens_per_sec = tokens_processed / elapsed
             progress_metrics = self._build_progress_metrics(step, tokens_per_sec, total_tokens_processed)
             train_loss = float(accum_loss.item())
+            lm_loss_value = float(accum_lm_loss.item())
+            moe_aux_value = float(accum_moe_aux.item())
+            moe_z_value = float(accum_moe_z.item())
 
-            record = {"step": step, "train_loss": train_loss, "lr": lr, **progress_metrics}
+            record = {"step": step, "train_loss": train_loss, "lm_loss": lm_loss_value, "lr": lr, **progress_metrics}
+            if self.config.model.moe_enabled:
+                record.update(
+                    {
+                        "moe_aux_loss": moe_aux_value,
+                        "moe_z_loss": moe_z_value,
+                        "moe_dropped_frac": self.model.last_moe_metrics["dropped_frac"],
+                        "moe_expert_entropy": self.model.last_moe_metrics["expert_entropy"],
+                    }
+                )
 
             if step % self.config.metrics.log_interval == 0:
-                train_metrics = {"train_loss": train_loss, "lr": lr, **progress_metrics}
+                train_metrics = {"train_loss": train_loss, "lm_loss": lm_loss_value, "lr": lr, **progress_metrics}
+                if self.config.model.moe_enabled:
+                    train_metrics.update(
+                        {
+                            "moe_aux_loss": moe_aux_value,
+                            "moe_z_loss": moe_z_value,
+                            "moe_dropped_frac": self.model.last_moe_metrics["dropped_frac"],
+                            "moe_expert_entropy": self.model.last_moe_metrics["expert_entropy"],
+                        }
+                    )
                 self.logger.log(train_metrics, step=step)
                 print(self._format_progress_log(train_metrics))
 

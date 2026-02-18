@@ -13,6 +13,14 @@ class TestModelConfig:
         assert cfg.vocab_size == 50257
         assert cfg.max_seq_len == 1024
         assert cfg.dropout == 0.1
+        assert cfg.moe_enabled is False
+        assert cfg.moe_num_experts == 8
+        assert cfg.moe_top_k == 2
+        assert cfg.moe_expert_d_ff == 1536
+        assert cfg.moe_capacity_factor == 1.25
+        assert cfg.moe_router_jitter == 0.01
+        assert cfg.moe_start_layer == 6
+        assert cfg.moe_layer_stride == 2
 
     def test_custom_values(self):
         cfg = ModelConfig(n_layers=6, d_model=512)
@@ -38,6 +46,8 @@ class TestTrainConfig:
         assert cfg.muon_lr == 0.02
         assert cfg.muon_momentum == 0.95
         assert cfg.ns_steps == 5
+        assert cfg.moe_aux_loss_coef == 0.01
+        assert cfg.moe_z_loss_coef == 1e-4
 
     def test_custom(self):
         cfg = TrainConfig(learning_rate=1e-4, batch_size=32)
@@ -74,15 +84,18 @@ class TestNashConfig:
 class TestLoadConfig:
     def test_load_from_yaml(self, tmp_path):
         yaml_content = {
-            "model": {"n_layers": 6, "d_model": 512},
+            "model": {"n_layers": 8, "d_model": 512, "moe_enabled": True, "moe_num_experts": 4, "moe_top_k": 1},
             "train": {"learning_rate": 1e-4, "precision": "fp16"},
         }
         yaml_path = tmp_path / "test.yaml"
         yaml_path.write_text(yaml.dump(yaml_content))
 
         cfg = load_config(str(yaml_path))
-        assert cfg.model.n_layers == 6
+        assert cfg.model.n_layers == 8
         assert cfg.model.d_model == 512
+        assert cfg.model.moe_enabled is True
+        assert cfg.model.moe_num_experts == 4
+        assert cfg.model.moe_top_k == 1
         assert cfg.train.learning_rate == 1e-4
         assert cfg.train.precision == "fp16"
         assert cfg.model.n_heads == 12
@@ -93,18 +106,41 @@ class TestLoadConfig:
         yaml_path = tmp_path / "test.yaml"
         yaml_path.write_text(yaml.dump(yaml_content))
 
-        overrides = {"model.n_layers": "12", "train.learning_rate": "1e-5", "train.precision": "fp16"}
+        overrides = {
+            "model.n_layers": "12",
+            "model.moe_enabled": "true",
+            "model.moe_num_experts": "16",
+            "model.moe_top_k": "4",
+            "train.learning_rate": "1e-5",
+            "train.precision": "fp16",
+            "train.moe_aux_loss_coef": "0.02",
+        }
         cfg = load_config(str(yaml_path), overrides=overrides)
         assert cfg.model.n_layers == 12
+        assert cfg.model.moe_enabled is True
+        assert cfg.model.moe_num_experts == 16
+        assert cfg.model.moe_top_k == 4
         assert cfg.train.learning_rate == 1e-5
         assert cfg.train.precision == "fp16"
+        assert cfg.train.moe_aux_loss_coef == 0.02
 
     def test_cli_overrides_without_yaml(self):
-        overrides = {"model.n_layers": "6", "train.batch_size": "32", "precision": "fp16"}
+        overrides = {
+            "model.n_layers": "6",
+            "model.moe_enabled": "true",
+            "model.moe_num_experts": "8",
+            "model.moe_top_k": "2",
+            "model.moe_start_layer": "0",
+            "train.batch_size": "32",
+            "precision": "fp16",
+            "moe_z_loss_coef": "0.001",
+        }
         cfg = load_config(config_path=None, overrides=overrides)
         assert cfg.model.n_layers == 6
+        assert cfg.model.moe_enabled is True
         assert cfg.train.batch_size == 32
         assert cfg.train.precision == "fp16"
+        assert cfg.train.moe_z_loss_coef == 0.001
 
     def test_invalid_precision_override_raises(self):
         with pytest.raises(ValueError, match="Unsupported train.precision"):
@@ -123,3 +159,25 @@ class TestLoadConfig:
         yaml_path.write_text(yaml.dump(yaml_content))
         cfg = load_config(str(yaml_path))
         assert cfg.train.muon_lr == 0.03
+
+    def test_invalid_moe_top_k_raises(self, tmp_path):
+        yaml_content = {"model": {"moe_enabled": True, "moe_num_experts": 4, "moe_top_k": 5}}
+        yaml_path = tmp_path / "test.yaml"
+        yaml_path.write_text(yaml.dump(yaml_content))
+        with pytest.raises(ValueError, match="moe_top_k"):
+            load_config(str(yaml_path))
+
+    def test_invalid_moe_start_layer_raises(self, tmp_path):
+        yaml_content = {"model": {"moe_enabled": True, "n_layers": 4, "moe_start_layer": 4}}
+        yaml_path = tmp_path / "test.yaml"
+        yaml_path.write_text(yaml.dump(yaml_content))
+        with pytest.raises(ValueError, match="moe_start_layer"):
+            load_config(str(yaml_path))
+
+    def test_invalid_moe_expert_d_ff_raises(self):
+        with pytest.raises(ValueError, match="moe_expert_d_ff"):
+            load_config(config_path=None, overrides={"model.moe_enabled": "true", "model.moe_expert_d_ff": "0"})
+
+    def test_invalid_moe_layer_stride_raises(self):
+        with pytest.raises(ValueError, match="moe_layer_stride"):
+            load_config(config_path=None, overrides={"model.moe_enabled": "true", "model.moe_layer_stride": "0"})

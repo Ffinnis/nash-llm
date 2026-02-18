@@ -28,6 +28,17 @@ class TestTrainer:
             metrics=MetricsConfig(wandb_enabled=False, log_interval=2),
         )
 
+    def _make_moe_config(self, tmp_path):
+        cfg = self._make_config(tmp_path)
+        cfg.model.n_layers = 4
+        cfg.model.moe_enabled = True
+        cfg.model.moe_num_experts = 4
+        cfg.model.moe_top_k = 2
+        cfg.model.moe_expert_d_ff = 64
+        cfg.model.moe_start_layer = 0
+        cfg.model.moe_layer_stride = 1
+        return cfg
+
     def test_train_reduces_loss(self, tmp_path):
         cfg = self._make_config(tmp_path)
         ckpt_dir = str(tmp_path / "checkpoints")
@@ -135,3 +146,20 @@ class TestTrainer:
         history = trainer.train()
         assert len(history) == 5
         assert all(not np.isnan(h["train_loss"]) for h in history)
+
+    def test_moe_training_logs_moe_metrics(self, tmp_path):
+        cfg = self._make_moe_config(tmp_path)
+        cfg.train.max_steps = 5
+        ckpt_dir = str(tmp_path / "checkpoints")
+        trainer = Trainer(cfg, checkpoint_dir=ckpt_dir)
+        history = trainer.train()
+
+        assert len(history) == 5
+        assert all("lm_loss" in h for h in history)
+        assert all("moe_aux_loss" in h for h in history)
+        assert all("moe_z_loss" in h for h in history)
+        assert all("moe_dropped_frac" in h for h in history)
+        assert all("moe_expert_entropy" in h for h in history)
+        assert all(not np.isnan(h["moe_aux_loss"]) for h in history)
+        assert all(not np.isnan(h["moe_z_loss"]) for h in history)
+        assert all(0.0 <= h["moe_dropped_frac"] <= 1.0 for h in history)

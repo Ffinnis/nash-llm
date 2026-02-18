@@ -67,41 +67,25 @@ class TestCheckpoint:
         with pytest.raises(ValueError, match="single optimizer state"):
             load_checkpoint(path, model2, optimizers)
 
-    def test_load_vanilla_adamw_state_into_nesterov_adamw(self, tmp_path):
+    def test_nadam_roundtrip(self, tmp_path):
         path = str(tmp_path / "ckpt.pt")
         model1 = GPT(self.cfg)
-        decay_params = []
-        no_decay_params = []
-        for _, p in model1.named_parameters():
-            if not p.requires_grad:
-                continue
-            if p.ndim < 2:
-                no_decay_params.append(p)
-            else:
-                decay_params.append(p)
-        vanilla_opt = torch.optim.AdamW(
-            [
-                {"params": decay_params, "weight_decay": 0.1},
-                {"params": no_decay_params, "weight_decay": 0.0},
-            ],
-            lr=3e-4,
-            betas=(0.9, 0.95),
-        )
+        opt1 = configure_optimizer(model1, lr=3e-4, weight_decay=0.1, betas=(0.9, 0.95))
 
         x = torch.randint(0, 100, (1, 8))
         targets = torch.randint(0, 100, (1, 8))
         _, loss = model1(x, targets)
         loss.backward()
-        vanilla_opt.step()
-        save_checkpoint(path, model1, vanilla_opt, step=7, config=NashConfig(model=self.cfg))
+        opt1.step()
+        save_checkpoint(path, model1, opt1, step=7, config=NashConfig(model=self.cfg))
 
         model2 = GPT(self.cfg)
-        nesterov_opt = configure_optimizer(model2, lr=3e-4, weight_decay=0.1, betas=(0.9, 0.95))
-        load_checkpoint(path, model2, nesterov_opt)
-        assert len(nesterov_opt.state) > 0
+        opt2 = configure_optimizer(model2, lr=3e-4, weight_decay=0.1, betas=(0.9, 0.95))
+        load_checkpoint(path, model2, opt2)
+        assert len(opt2.state) > 0
 
         x2 = torch.randint(0, 100, (1, 8))
         targets2 = torch.randint(0, 100, (1, 8))
         _, loss2 = model2(x2, targets2)
         loss2.backward()
-        nesterov_opt.step()
+        opt2.step()

@@ -27,9 +27,10 @@ class TrainConfig:
     grad_accum_steps: int = 1
     compile: bool = False
     precision: str = "bf16"
-    muon_lr: float = 0.02
-    muon_momentum: float = 0.95
-    ns_steps: int = 5
+    aro_lr: float = 0.02
+    aro_momentum: float = 0.95
+    sink_iters: int = 5
+    rms_target: float = 0.2
 
 
 @dataclass

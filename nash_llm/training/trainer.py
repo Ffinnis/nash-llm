@@ -72,9 +72,10 @@ class Trainer:
             self.model,
             lr=config.train.learning_rate,
             weight_decay=config.train.weight_decay,
-            muon_lr=config.train.muon_lr,
-            muon_momentum=config.train.muon_momentum,
-            ns_steps=config.train.ns_steps,
+            aro_lr=config.train.aro_lr,
+            aro_momentum=config.train.aro_momentum,
+            sink_iters=config.train.sink_iters,
+            rms_target=config.train.rms_target,
             fused=use_fused_adamw,
         )
         # Keep self.optimizer pointing to the first optimizer for backward compat
@@ -86,9 +87,9 @@ class Trainer:
             max_lr=config.train.learning_rate, min_lr=min_lr,
             warmup_steps=scheduler_warmup_steps, max_steps=self.train_max_steps,
         )
-        muon_min_lr = config.train.muon_lr / 10
-        self.muon_scheduler = CosineScheduler(
-            max_lr=config.train.muon_lr, min_lr=muon_min_lr,
+        aro_min_lr = config.train.aro_lr / 10
+        self.aro_scheduler = CosineScheduler(
+            max_lr=config.train.aro_lr, min_lr=aro_min_lr,
             warmup_steps=scheduler_warmup_steps, max_steps=self.train_max_steps,
         )
 
@@ -138,10 +139,10 @@ class Trainer:
 
     def _set_lr(self, step: int):
         lr = self.scheduler.get_lr(step)
-        # Muon optimizer is first, AdamW is second
-        muon_lr = self.muon_scheduler.get_lr(step)
+        # ARO optimizer is first, AdamW is second
+        aro_lr = self.aro_scheduler.get_lr(step)
         for pg in self.optimizers[0].param_groups:
-            pg["lr"] = muon_lr
+            pg["lr"] = aro_lr
         for pg in self.optimizers[1].param_groups:
             pg["lr"] = lr
         return lr

@@ -1,83 +1,77 @@
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 import inspect
+from typing import TYPE_CHECKING
 
-from nash_llm.optim.muon import Muon
+from nash_llm.optim.aro import ARO, LayerParamGroup
+
+from typing import cast
+
+if TYPE_CHECKING:
+    from nash_llm.model import GPT
+    from nash_llm.model.transformer import TransformerBlock
 
 
 def configure_optimizers(
-    model: nn.Module,
+    model: GPT,
     lr: float,
     weight_decay: float,
-    muon_lr: float = 0.02,
-    muon_momentum: float = 0.95,
-    ns_steps: int = 5,
+    aro_lr: float = 0.02,
+    aro_momentum: float = 0.95,
+    sink_iters: int = 5,
+    rms_target: float = 0.2,
     betas: tuple[float, float] = (0.9, 0.95),
     fused: bool | None = None,
 ) -> list[torch.optim.Optimizer]:
-    """Create TEON+AdamW optimizer pair.
+    """Create ARO+AdamW optimizer pair.
 
-    Returns [Muon, AdamW]:
-    - Muon: TEON cross-layer Q/K/V stacking (K=2) + per-layer ortho for out_proj, MLP
+    Returns [ARO, AdamW]:
+    - ARO: chain-coupled rotation sharing for all layer weight matrices
+           (q/k/v_proj, out_proj, fc1, fc2 per layer)
     - AdamW: embeddings, layer norms, biases, and remaining params
     """
-    muon_params: list[nn.Parameter] = []  # per-layer ortho (out_proj, MLP)
-    teon_groups: list[list[nn.Parameter]] = []  # cross-layer stacking (Q/K/V)
+    layer_groups: list[LayerParamGroup] = []
+    aro_param_ids: set[int] = set()
+
+    # Build layer groups from model blocks
+    for idx, module in enumerate(model.blocks):
+        block = cast("TransformerBlock", module)
+        consumers: list[nn.Parameter] = [
+            block.attn.q_proj.weight,  # type: ignore[list-item]
+            block.attn.k_proj.weight,  # type: ignore[list-item]
+            block.attn.v_proj.weight,  # type: ignore[list-item]
+            block.ff.fc1.weight,  # type: ignore[list-item]
+        ]
+        producers: list[nn.Parameter] = [
+            block.attn.out_proj.weight,  # type: ignore[list-item]
+            block.ff.fc2.weight,  # type: ignore[list-item]
+        ]
+        layer_groups.append(LayerParamGroup(idx, consumers, producers))
+        for p in consumers + producers:
+            aro_param_ids.add(id(p))
+
+    # Everything else goes to AdamW
     adamw_decay: list[nn.Parameter] = []
     adamw_no_decay: list[nn.Parameter] = []
 
-    muon_param_ids: set[int] = set()
-
-    muon_patterns = ("out_proj.weight", "fc1.weight", "fc2.weight")
-    teon_patterns = ("q_proj.weight", "k_proj.weight", "v_proj.weight")
-
-    # Build TEON groups: stack K=2 consecutive blocks for each of Q/K/V
-    teon_by_type: dict[str, list[nn.Parameter]] = {p: [] for p in teon_patterns}
     for name, param in model.named_parameters():
-        if not param.requires_grad:
+        if not param.requires_grad or id(param) in aro_param_ids:
             continue
-        for pattern in teon_patterns:
-            if pattern in name:
-                teon_by_type[pattern].append(param)
-                muon_param_ids.add(id(param))
-                break
+        if param.ndim < 2:
+            adamw_no_decay.append(param)
+        else:
+            adamw_decay.append(param)
 
-    K = 2
-    for pattern in teon_patterns:
-        params = teon_by_type[pattern]
-        num_groups = len(params) // K
-        for i in range(num_groups):
-            teon_groups.append(params[i * K : (i + 1) * K])
-        # Remainder (odd layer count) goes to muon_params as per-layer
-        remainder_start = num_groups * K
-        for p in params[remainder_start:]:
-            muon_params.append(p)
-
-    # Collect MUON per-layer params (out_proj, fc1, fc2) + remaining to AdamW
-    for name, param in model.named_parameters():
-        if not param.requires_grad or id(param) in muon_param_ids:
-            continue
-        matched = False
-        for pattern in muon_patterns:
-            if pattern in name:
-                muon_params.append(param)
-                muon_param_ids.add(id(param))
-                matched = True
-                break
-        if not matched:
-            if param.ndim < 2:
-                adamw_no_decay.append(param)
-            else:
-                adamw_decay.append(param)
-
-    # Build Muon optimizer
-    muon_opt = Muon(
-        muon_params=muon_params,
-        teon_params=teon_groups,
-        lr=muon_lr,
-        momentum=muon_momentum,
+    # Build ARO optimizer
+    aro_opt = ARO(
+        layer_groups=layer_groups,
+        lr=aro_lr,
+        momentum=aro_momentum,
         weight_decay=weight_decay,
-        ns_steps=ns_steps,
+        sink_iters=sink_iters,
+        rms_target=rms_target,
     )
 
     # Build AdamW for remaining params
@@ -99,4 +93,4 @@ def configure_optimizers(
 
     adamw_opt = torch.optim.AdamW(adamw_groups, **adamw_kwargs)
 
-    return [muon_opt, adamw_opt]
+    return [aro_opt, adamw_opt]

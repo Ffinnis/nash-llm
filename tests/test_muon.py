@@ -4,6 +4,7 @@ import torch.nn as nn
 from nash_llm.model import GPT
 from nash_llm.config import ModelConfig
 from nash_llm.optim.muon import _polar_express_impl, orthogonalize, Muon
+from nash_llm.optim.aro import ARO
 from nash_llm.optim.adamw import configure_optimizers
 
 
@@ -182,7 +183,7 @@ class TestConfigureOptimizers:
     def test_returns_two_optimizers(self):
         opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1)
         assert len(opts) == 2
-        assert isinstance(opts[0], Muon)
+        assert isinstance(opts[0], ARO)
         assert isinstance(opts[1], torch.optim.AdamW)
 
     def test_all_params_assigned(self):
@@ -199,69 +200,52 @@ class TestConfigureOptimizers:
         assert model_param_ids == opt_param_ids, "Not all params assigned to an optimizer"
 
     def test_no_param_in_both_optimizers(self):
-        """No param should be in both Muon and AdamW."""
+        """No param should be in both ARO and AdamW."""
         opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1)
 
-        muon_ids = set()
+        aro_ids = set()
         for pg in opts[0].param_groups:
             for p in pg["params"]:
-                muon_ids.add(id(p))
+                aro_ids.add(id(p))
 
         adamw_ids = set()
         for pg in opts[1].param_groups:
             for p in pg["params"]:
                 adamw_ids.add(id(p))
 
-        overlap = muon_ids & adamw_ids
+        overlap = aro_ids & adamw_ids
         assert len(overlap) == 0, f"Found {len(overlap)} params in both optimizers"
 
-    def test_teon_has_qkv_params(self):
-        """TEON groups should contain q_proj, k_proj, v_proj weights."""
+    def test_aro_has_layer_weights(self):
+        """ARO layer groups should contain q/k/v_proj, out_proj, fc1, fc2 weights."""
         opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1)
-        muon_opt = opts[0]
-        assert isinstance(muon_opt, Muon)
+        aro_opt = opts[0]
+        assert isinstance(aro_opt, ARO)
 
-        teon_param_ids = set()
-        for group in muon_opt._teon_groups:
-            for p in group:
-                teon_param_ids.add(id(p))
+        aro_param_ids = set()
+        for group in aro_opt._layer_groups:
+            for p in group.consumer_params + group.producer_params:
+                aro_param_ids.add(id(p))
 
-        qkv_param_ids = set()
-        for name, p in self.model.named_parameters():
-            if any(pat in name for pat in ["q_proj.weight", "k_proj.weight", "v_proj.weight"]):
-                qkv_param_ids.add(id(p))
+        expected_ids = set()
+        for block in self.model.blocks:
+            for proj in [block.attn.q_proj, block.attn.k_proj, block.attn.v_proj, block.attn.out_proj]:
+                expected_ids.add(id(proj.weight))
+            expected_ids.add(id(block.ff.fc1.weight))
+            expected_ids.add(id(block.ff.fc2.weight))
 
-        assert qkv_param_ids == teon_param_ids, "TEON should contain exactly the Q/K/V params"
+        assert aro_param_ids == expected_ids
 
-    def test_teon_groups_have_k2(self):
-        """Each TEON group should have K=2 params."""
+    def test_aro_layer_groups_structure(self):
+        """Each layer group should have 4 consumers and 2 producers."""
         opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1)
-        muon_opt = opts[0]
-        assert isinstance(muon_opt, Muon)
+        aro_opt = opts[0]
+        assert isinstance(aro_opt, ARO)
 
-        for group in muon_opt._teon_groups:
-            assert len(group) == 2, f"TEON group should have K=2, got {len(group)}"
-
-    def test_teon_group_order_is_deterministic(self):
-        """TEON groups must be in a stable Q->K->V order for state_dict compatibility."""
-        opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1)
-        muon_opt = opts[0]
-        assert isinstance(muon_opt, Muon)
-        name_by_id = {id(p): name for name, p in self.model.named_parameters()}
-
-        group_names = []
-        for group in muon_opt._teon_groups:
-            group_names.append(tuple(name_by_id[id(p)] for p in group))
-
-        expected = [
-            ("blocks.0.attn.q_proj.weight", "blocks.1.attn.q_proj.weight"),
-            ("blocks.2.attn.q_proj.weight", "blocks.3.attn.q_proj.weight"),
-            ("blocks.0.attn.k_proj.weight", "blocks.1.attn.k_proj.weight"),
-            ("blocks.2.attn.k_proj.weight", "blocks.3.attn.k_proj.weight"),
-            ("blocks.0.attn.v_proj.weight", "blocks.1.attn.v_proj.weight"),
-            ("blocks.2.attn.v_proj.weight", "blocks.3.attn.v_proj.weight"),
-        ]
-        assert group_names == expected
+        assert len(aro_opt._layer_groups) == 4  # n_layers=4
+        for group in aro_opt._layer_groups:
+            assert len(group.consumer_params) == 4  # q, k, v, fc1
+            assert len(group.producer_params) == 2  # out_proj, fc2
 
 
 class TestAttentionSplitQKV:

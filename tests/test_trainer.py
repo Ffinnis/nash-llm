@@ -125,9 +125,9 @@ class TestTrainer:
         ckpt_dir = str(tmp_path / "checkpoints")
         trainer = Trainer(cfg, checkpoint_dir=ckpt_dir)
         assert len(trainer.optimizers) == 2
-        assert trainer.muon_scheduler is not None
+        assert trainer.aro_scheduler is not None
 
-    def test_teon_training_runs(self, tmp_path):
+    def test_aro_training_runs(self, tmp_path):
         cfg = self._make_config(tmp_path)
         cfg.train.max_steps = 5
         ckpt_dir = str(tmp_path / "checkpoints")

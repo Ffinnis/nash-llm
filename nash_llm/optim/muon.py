@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 from torch.optim import Optimizer
@@ -70,6 +72,11 @@ def orthogonalize(M: torch.Tensor, steps: int = 5) -> torch.Tensor:
 class Muon(Optimizer):
     """MUON/TEON optimizer with Polar Express orthogonalization.
 
+    Supports three modes via the ``namo`` parameter:
+    - ``"none"``: vanilla Muon/TEON (default, backward compatible)
+    - ``"namo"``: T-NAMO — adaptive scalar per param (Zhang et al., 2025)
+    - ``"namo_d"``: T-NAMO-D — adaptive column-wise diagonal per param
+
     Handles two types of parameter groups:
     - muon_params: per-layer orthogonalization (out_proj, MLP weights)
     - teon_params: cross-layer stacking of K consecutive blocks (Q/K/V)
@@ -79,11 +86,22 @@ class Muon(Optimizer):
         O_t = Ortho(M_t)
         W_t = W_{t-1} - lr * sqrt(m/n) * O_t
 
+    Math (NAMO adds adaptive scalar):
+        v_t = mu2 * v_{t-1} + (1 - mu2) * ||G_t||²_F
+        α_t = (√(1-mu2^t) / (1-mu^t)) * ||M_t||_F / (√v_t + ε)
+        W_t = W_{t-1} - lr * sqrt(m/n) * α_t * O_t
+
+    Math (NAMO-D adds column-wise diagonal):
+        v_t[j] = mu2 * v_{t-1}[j] + (1 - mu2) * ||G_t[:,j]||²
+        d_t[j] = (√(1-mu2^t) / (1-mu^t)) * ||M_t[:,j]|| / (√v_t[j] + ε)
+        D_t = diag(clamp(d_t, c*mean, mean/c))
+        W_t = W_{t-1} - lr * sqrt(m/n) * O_t @ D_t
+
     Math (TEON per group of K params):
         Z = [M^(1) | M^(2) | ... | M^(K)]   (mode-1 matricization)
         Q = Ortho(Z)
         O^(k) = Q[:, k*n:(k+1)*n]            (split back)
-        W^(k)_t = W^(k)_{t-1} - lr * sqrt(m/n) * O^(k)
+        α_t / D_t computed per-param (preserves per-layer noise sensitivity)
     """
 
     def __init__(
@@ -94,7 +112,14 @@ class Muon(Optimizer):
         momentum: float = 0.95,
         weight_decay: float = 0.0,
         ns_steps: int = 5,
+        namo: str = "none",
+        mu2: float = 0.99,
+        namo_eps: float = 1e-8,
+        namo_clamp_c: float = 0.1,
     ):
+        if namo not in ("none", "namo", "namo_d"):
+            raise ValueError(f"namo must be 'none', 'namo', or 'namo_d', got '{namo}'")
+
         # Flatten all params for Optimizer registration
         all_params: list[nn.Parameter] = []
         all_params.extend(muon_params)
@@ -111,6 +136,10 @@ class Muon(Optimizer):
 
         self._muon_params = muon_params
         self._teon_groups = teon_params
+        self._namo = namo
+        self._mu2 = mu2
+        self._namo_eps = namo_eps
+        self._namo_clamp_c = namo_clamp_c
 
         # Pre-group MUON params by shape for batched orthogonalization
         self._muon_shape_groups: dict[tuple[int, int], list[nn.Parameter]] = {}
@@ -128,6 +157,79 @@ class Muon(Optimizer):
             key = (m, n, K)
             self._teon_shape_groups.setdefault(key, []).append(group)
 
+    def _init_namo_state(self, state: dict, param: nn.Parameter) -> None:
+        """Initialize NAMO-specific state entries."""
+        state["step"] = 0
+        if self._namo == "namo":
+            state["v"] = torch.zeros((), device=param.device, dtype=torch.float32)
+        elif self._namo == "namo_d":
+            n = param.shape[1]
+            state["v_col"] = torch.zeros(n, device=param.device, dtype=torch.float32)
+
+    def _update_namo_v(self, state: dict, grad: torch.Tensor) -> None:
+        """Update NAMO second-moment EMA from gradient (before orthogonalization)."""
+        mu2 = self._mu2
+        if self._namo == "namo":
+            gn_sq = grad.float().norm().square()
+            state["v"].mul_(mu2).add_(gn_sq, alpha=1.0 - mu2)
+        elif self._namo == "namo_d":
+            col_norms_sq = grad.float().norm(dim=0).square()
+            state["v_col"].mul_(mu2).add_(col_norms_sq, alpha=1.0 - mu2)
+        state["step"] += 1
+
+    def _apply_update(
+        self,
+        param: nn.Parameter,
+        ortho: torch.Tensor,
+        lr: float,
+        wd: float,
+        scale: float,
+    ) -> None:
+        """Apply weight decay and scaled orthogonalized update to a single param."""
+        if self._namo == "none":
+            if wd > 0:
+                param.data.mul_(1.0 - lr * wd)
+            param.data.add_(ortho, alpha=-lr * scale)
+            return
+
+        state = self.state[param]
+        step = state["step"]
+        mu = self.defaults["momentum"]
+        mu2 = self._mu2
+        eps = self._namo_eps
+        buf = state["momentum_buffer"]
+
+        bc1 = 1.0 - mu ** step
+        bc2 = 1.0 - mu2 ** step
+        bc_factor = math.sqrt(bc2) / bc1
+
+        if self._namo == "namo":
+            # Scalar adaptive stepsize: α_t = bc_factor * ||M_t||_F / (√v_t + ε)
+            m_norm = buf.float().norm()
+            v_sqrt = state["v"].sqrt()
+            alpha = bc_factor * m_norm / (v_sqrt + eps)
+            # Apply adaptive weight decay and update
+            if wd > 0:
+                param.data.mul_(1.0 - lr * wd * alpha.item())
+            param.data.add_(ortho, alpha=-lr * scale * alpha.item())
+
+        elif self._namo == "namo_d":
+            # Column-wise adaptive stepsize: d_t[j] = bc_factor * ||M[:,j]|| / (√v[j] + ε)
+            col_norms_m = buf.float().norm(dim=0)
+            v_col_sqrt = state["v_col"].sqrt()
+            d = bc_factor * col_norms_m / (v_col_sqrt + eps)
+            # Clamp toward mean
+            c = self._namo_clamp_c
+            d_mean = d.mean()
+            d = d.clamp(min=c * d_mean, max=d_mean / c)
+            d_param = d.to(dtype=param.data.dtype)
+            # Apply column-wise weight decay: W *= (1 - lr * wd * d)
+            if wd > 0:
+                decay = (1.0 - lr * wd * d_param).clamp(min=0.0)
+                param.data.mul_(decay.unsqueeze(0))
+            # Apply column-wise update: W -= lr * scale * O @ diag(d)
+            param.data.add_(ortho * d_param.unsqueeze(0), alpha=-lr * scale)
+
     @torch.no_grad()
     def step(self, closure=None) -> float | None:  # type: ignore[override]
         loss = None
@@ -139,16 +241,21 @@ class Muon(Optimizer):
         mu = self.defaults["momentum"]
         wd = self.defaults["weight_decay"]
         ns_steps = self.defaults["ns_steps"]
+        use_namo = self._namo != "none"
 
         # --- MUON: batched per-shape orthogonalization ---
-        # Phase 1: update all momentum buffers
+        # Phase 1: update all momentum buffers (and NAMO v_t)
         for param in self._muon_params:
             if param.grad is None:
                 continue
             state = self.state[param]
             if len(state) == 0:
                 state["momentum_buffer"] = torch.zeros_like(param.data)
+                if use_namo:
+                    self._init_namo_state(state, param)
             buf = state["momentum_buffer"]
+            if use_namo:
+                self._update_namo_v(state, param.grad)
             buf.mul_(mu).add_(param.grad, alpha=1.0 - mu)
 
         # Phase 2: batched orthogonalization by shape
@@ -159,9 +266,7 @@ class Muon(Optimizer):
                 ortho = orthogonalize(bufs, ns_steps)
                 scale = (m / n) ** 0.5
                 for i, p in enumerate(params):
-                    if wd > 0:
-                        p.data.mul_(1.0 - lr * wd)
-                    p.data.add_(ortho[i], alpha=-lr * scale)
+                    self._apply_update(p, ortho[i], lr, wd, scale)
             else:
                 # Slow path: per-param fallback (rare, e.g. frozen layers)
                 for p in params:
@@ -169,12 +274,10 @@ class Muon(Optimizer):
                         continue
                     buf = self.state[p]["momentum_buffer"]
                     o = orthogonalize(buf, ns_steps)
-                    if wd > 0:
-                        p.data.mul_(1.0 - lr * wd)
-                    p.data.add_(o, alpha=-lr * (m / n) ** 0.5)
+                    self._apply_update(p, o, lr, wd, (m / n) ** 0.5)
 
         # --- TEON: batched cross-layer stacking ---
-        # Phase 1: update all TEON momentum buffers
+        # Phase 1: update all TEON momentum buffers (and NAMO v_t)
         for group in self._teon_groups:
             for param in group:
                 if param.grad is None:
@@ -182,7 +285,11 @@ class Muon(Optimizer):
                 state = self.state[param]
                 if len(state) == 0:
                     state["momentum_buffer"] = torch.zeros_like(param.data)
+                    if use_namo:
+                        self._init_namo_state(state, param)
                 buf = state["momentum_buffer"]
+                if use_namo:
+                    self._update_namo_v(state, param.grad)
                 buf.mul_(mu).add_(param.grad, alpha=1.0 - mu)
 
         # Phase 2: batched orthogonalization by (m, n, K)
@@ -207,9 +314,7 @@ class Muon(Optimizer):
                 for gi, group in enumerate(complete):
                     ortho_slices = Q_batch[gi].split(n, dim=1)
                     for i, param in enumerate(group):
-                        if wd > 0:
-                            param.data.mul_(1.0 - lr * wd)
-                        param.data.add_(ortho_slices[i], alpha=-lr * scale)
+                        self._apply_update(param, ortho_slices[i], lr, wd, scale)
 
             # Fallback: per-param MUON for incomplete groups
             for group in incomplete:
@@ -218,8 +323,4 @@ class Muon(Optimizer):
                         continue
                     buf = self.state[param]["momentum_buffer"]
                     o = orthogonalize(buf, ns_steps)
-                    if wd > 0:
-                        param.data.mul_(1.0 - lr * wd)
-                    param.data.add_(o, alpha=-lr * (m / n) ** 0.5)
-
-        return loss
+                    self._apply_update(param, o, lr, wd, (m / n) ** 0.5)

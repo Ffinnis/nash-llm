@@ -1,3 +1,5 @@
+import math
+
 import torch
 import pytest
 import torch.nn as nn
@@ -297,3 +299,176 @@ class TestAttentionSplitQKV:
         assert "blocks.0.attn.v_proj.weight" in param_names
         assert "blocks.0.attn.q_proj.bias" in param_names
         assert "blocks.0.attn.qkv.weight" not in param_names
+
+
+class TestNAMO:
+    def setup_method(self):
+        torch.manual_seed(42)
+        self.params = [nn.Parameter(torch.randn(64, 128)) for _ in range(3)]
+        self.grads = [torch.randn(64, 128) for _ in range(3)]
+
+    def test_namo_step_updates_weights(self):
+        """A single NAMO step should change the parameters."""
+        original = [p.clone() for p in self.params]
+
+        opt = Muon(
+            muon_params=self.params, teon_params=[],
+            lr=0.05, momentum=0.95, ns_steps=5, namo="namo",
+        )
+
+        for p, g in zip(self.params, self.grads):
+            p.grad = g.clone()
+        opt.step()
+
+        for orig, updated in zip(original, self.params):
+            assert not torch.allclose(orig, updated), "NAMO should update params"
+
+    def test_namo_d_step_updates_weights(self):
+        """A single NAMO-D step should change the parameters."""
+        original = [p.clone() for p in self.params]
+
+        opt = Muon(
+            muon_params=self.params, teon_params=[],
+            lr=0.04, momentum=0.95, ns_steps=5,
+            namo="namo_d", namo_clamp_c=0.1,
+        )
+
+        for p, g in zip(self.params, self.grads):
+            p.grad = g.clone()
+        opt.step()
+
+        for orig, updated in zip(original, self.params):
+            assert not torch.allclose(orig, updated), "NAMO-D should update params"
+
+    def test_namo_adaptive_scalar_bounded(self):
+        """NAMO adaptive scalar α_t should be ≤ √((1-μ₁)/(1-μ₂))."""
+        mu = 0.95
+        mu2 = 0.99
+        bound = math.sqrt((1 - mu) / (1 - mu2))  # √5 ≈ 2.236
+
+        p = nn.Parameter(torch.randn(64, 128))
+        opt = Muon(
+            muon_params=[p], teon_params=[],
+            lr=0.05, momentum=mu, ns_steps=5, namo="namo", mu2=mu2,
+        )
+
+        # Run multiple steps with varying gradients
+        for _ in range(10):
+            p.grad = torch.randn_like(p)
+            opt.step()
+
+        state = opt.state[p]
+        step = state["step"]
+        bc1 = 1.0 - mu ** step
+        bc2 = 1.0 - mu2 ** step
+        m_norm = state["momentum_buffer"].float().norm()
+        v_sqrt = state["v"].sqrt()
+        alpha = (math.sqrt(bc2) / bc1) * m_norm / (v_sqrt + 1e-8)
+
+        assert alpha.item() <= bound + 1e-5, (
+            f"α_t={alpha.item():.4f} exceeds bound {bound:.4f}"
+        )
+
+    def test_namo_d_differs_from_namo(self):
+        """NAMO-D should produce different updates than NAMO."""
+        torch.manual_seed(42)
+        p_namo = nn.Parameter(torch.randn(64, 128))
+        p_namo_d = nn.Parameter(p_namo.detach().clone())
+        g = torch.randn(64, 128)
+
+        opt_namo = Muon(
+            muon_params=[p_namo], teon_params=[],
+            lr=0.05, momentum=0.95, ns_steps=5, namo="namo",
+        )
+        opt_namo_d = Muon(
+            muon_params=[p_namo_d], teon_params=[],
+            lr=0.05, momentum=0.95, ns_steps=5, namo="namo_d", namo_clamp_c=0.1,
+        )
+
+        for _ in range(3):
+            g = torch.randn(64, 128)
+            p_namo.grad = g.clone()
+            p_namo_d.grad = g.clone()
+            opt_namo.step()
+            opt_namo_d.step()
+
+        assert not torch.allclose(p_namo, p_namo_d, atol=1e-4), (
+            "NAMO and NAMO-D should produce different updates"
+        )
+
+    def test_namo_with_teon(self):
+        """NAMO should work with TEON stacking."""
+        torch.manual_seed(42)
+        p1 = nn.Parameter(torch.randn(32, 64))
+        p2 = nn.Parameter(torch.randn(32, 64))
+        original = [p1.clone(), p2.clone()]
+
+        opt = Muon(
+            muon_params=[], teon_params=[[p1, p2]],
+            lr=0.05, momentum=0.95, ns_steps=5, namo="namo",
+        )
+
+        p1.grad = torch.randn_like(p1)
+        p2.grad = torch.randn_like(p2)
+        opt.step()
+
+        assert not torch.allclose(original[0], p1), "TEON+NAMO should update p1"
+        assert not torch.allclose(original[1], p2), "TEON+NAMO should update p2"
+        # Verify NAMO state was initialized for TEON params
+        assert "v" in opt.state[p1]
+        assert "v" in opt.state[p2]
+        assert "step" in opt.state[p1]
+
+    def test_namo_d_with_teon(self):
+        """NAMO-D should work with TEON stacking."""
+        torch.manual_seed(42)
+        p1 = nn.Parameter(torch.randn(32, 64))
+        p2 = nn.Parameter(torch.randn(32, 64))
+
+        opt = Muon(
+            muon_params=[], teon_params=[[p1, p2]],
+            lr=0.04, momentum=0.95, ns_steps=5, namo="namo_d", namo_clamp_c=0.1,
+        )
+
+        p1.grad = torch.randn_like(p1)
+        p2.grad = torch.randn_like(p2)
+        opt.step()
+
+        assert "v_col" in opt.state[p1]
+        assert opt.state[p1]["v_col"].shape == (64,)
+
+    def test_namo_none_matches_vanilla_muon(self):
+        """namo='none' should produce identical results to vanilla Muon."""
+        torch.manual_seed(42)
+        p_vanilla = nn.Parameter(torch.randn(64, 128))
+        p_namo_none = nn.Parameter(p_vanilla.detach().clone())
+
+        opt_vanilla = Muon(
+            muon_params=[p_vanilla], teon_params=[],
+            lr=0.02, momentum=0.95, weight_decay=0.1, ns_steps=5,
+        )
+        opt_namo_none = Muon(
+            muon_params=[p_namo_none], teon_params=[],
+            lr=0.02, momentum=0.95, weight_decay=0.1, ns_steps=5,
+            namo="none",
+        )
+
+        for _ in range(5):
+            g = torch.randn(64, 128)
+            p_vanilla.grad = g.clone()
+            p_namo_none.grad = g.clone()
+            opt_vanilla.step()
+            opt_namo_none.step()
+
+        assert torch.allclose(p_vanilla, p_namo_none, atol=1e-6), (
+            "namo='none' should be identical to vanilla Muon"
+        )
+
+    def test_invalid_namo_raises(self):
+        """Invalid namo value should raise ValueError."""
+        with pytest.raises(ValueError, match="namo must be"):
+            Muon(
+                muon_params=[nn.Parameter(torch.randn(4, 4))],
+                teon_params=[],
+                namo="invalid",
+            )

@@ -75,6 +75,10 @@ class Trainer:
             muon_lr=config.train.muon_lr,
             muon_momentum=config.train.muon_momentum,
             ns_steps=config.train.ns_steps,
+            namo=config.train.namo,
+            mu2=config.train.muon_mu2,
+            namo_eps=config.train.namo_eps,
+            namo_clamp_c=config.train.namo_clamp_c,
             fused=use_fused_adamw,
         )
         # Keep self.optimizer pointing to the first optimizer for backward compat

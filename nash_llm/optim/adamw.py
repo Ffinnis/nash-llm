@@ -12,6 +12,10 @@ def configure_optimizers(
     muon_lr: float = 0.02,
     muon_momentum: float = 0.95,
     ns_steps: int = 5,
+    namo: str = "none",
+    mu2: float = 0.99,
+    namo_eps: float = 1e-8,
+    namo_clamp_c: float = 0.1,
     betas: tuple[float, float] = (0.9, 0.95),
     fused: bool | None = None,
 ) -> list[torch.optim.Optimizer]:
@@ -19,6 +23,7 @@ def configure_optimizers(
 
     Returns [Muon, AdamW]:
     - Muon: TEON cross-layer Q/K/V stacking (K=2) + per-layer ortho for out_proj, MLP
+      With optional NAMO/NAMO-D adaptive scaling (namo="namo" or "namo_d")
     - AdamW: embeddings, normalization params, biases, and remaining params
     """
     muon_params: list[nn.Parameter] = []  # per-layer ortho (out_proj, MLP)
@@ -78,6 +83,10 @@ def configure_optimizers(
         momentum=muon_momentum,
         weight_decay=weight_decay,
         ns_steps=ns_steps,
+        namo=namo,
+        mu2=mu2,
+        namo_eps=namo_eps,
+        namo_clamp_c=namo_clamp_c,
     )
 
     # Build AdamW for remaining params

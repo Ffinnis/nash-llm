@@ -30,6 +30,10 @@ class TrainConfig:
     muon_lr: float = 0.02
     muon_momentum: float = 0.95
     ns_steps: int = 5
+    namo: str = "none"
+    muon_mu2: float = 0.99
+    namo_eps: float = 1e-8
+    namo_clamp_c: float = 0.1
 
 
 @dataclass

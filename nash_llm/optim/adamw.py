@@ -90,11 +90,8 @@ def _configure_taro_optimizers(
 ) -> list[torch.optim.Optimizer]:
     """Create TARO+AdamW optimizer pair.
 
-    TARO groups all 2D matrix weights by symmetry type:
-    - QKV: Q+K+V stacked together, K=2 layers per block (6 params each)
-    - O: out_proj, K=2 layers per block
-    - UP: fc1, K=2 layers per block
-    - DOWN: fc2, K=2 layers per block
+    TARO groups all 2D matrix weights by type, each with K=2 cross-layer stacking
+    and independent rotation matrices: Q, K, V, O, UP, DOWN.
     AdamW handles embeddings, norms, biases.
     """
     from nash_llm.optim.taro import Taro
@@ -103,10 +100,11 @@ def _configure_taro_optimizers(
     adamw_decay: list[nn.Parameter] = []
     adamw_no_decay: list[nn.Parameter] = []
 
-    # Collect params by type
-    qkv_patterns = ("q_proj.weight", "k_proj.weight", "v_proj.weight")
+    # Collect params by type — separate Q/K/V for independent rotation matrices
     group_patterns: dict[str, tuple[str, ...]] = {
-        "qkv": qkv_patterns,
+        "q": ("q_proj.weight",),
+        "k": ("k_proj.weight",),
+        "v": ("v_proj.weight",),
         "o": ("out_proj.weight",),
         "up": ("fc1.weight",),
         "down": ("fc2.weight",),
@@ -138,42 +136,19 @@ def _configure_taro_optimizers(
     K = 2
     taro_groups: list[tuple[str, list[list[nn.Parameter]]]] = []
 
-    for group_type in ("qkv", "o", "up", "down"):
+    for group_type in ("q", "k", "v", "o", "up", "down"):
         params = params_by_type[group_type]
         if not params:
             continue
 
         blocks: list[list[nn.Parameter]] = []
-        if group_type == "qkv":
-            # QKV: interleave Q, K, V from same layers into blocks of 6
-            # params_by_type["qkv"] has all Q, K, V in model.named_parameters() order
-            # We need to group by layer: [Q0, K0, V0, Q1, K1, V1, ...]
-            # params are already in model order (Q0, K0, V0, Q1, K1, V1, ...)
-            # Each layer contributes 3 params, so a K=2 block = 6 params
-            params_per_layer = 3  # Q, K, V
-            n_layers = len(params) // params_per_layer
-            num_groups = n_layers // K
-            for i in range(num_groups):
-                # Layers i*K to (i+1)*K-1, each contributing Q, K, V
-                block = []
-                for layer_idx in range(i * K, (i + 1) * K):
-                    block.extend(params[layer_idx * params_per_layer : (layer_idx + 1) * params_per_layer])
-                blocks.append(block)
-            # Remainder layers
-            remainder_start = num_groups * K
-            if remainder_start < n_layers:
-                block = []
-                for layer_idx in range(remainder_start, n_layers):
-                    block.extend(params[layer_idx * params_per_layer : (layer_idx + 1) * params_per_layer])
-                blocks.append(block)
-        else:
-            # O, UP, DOWN: simple K=2 stacking
-            num_groups = len(params) // K
-            for i in range(num_groups):
-                blocks.append(params[i * K : (i + 1) * K])
-            remainder_start = num_groups * K
-            if remainder_start < len(params):
-                blocks.append(params[remainder_start:])
+        # All groups: simple K=2 cross-layer stacking
+        num_groups = len(params) // K
+        for i in range(num_groups):
+            blocks.append(params[i * K : (i + 1) * K])
+        remainder_start = num_groups * K
+        if remainder_start < len(params):
+            blocks.append(params[remainder_start:])
 
         taro_groups.append((group_type, blocks))
 

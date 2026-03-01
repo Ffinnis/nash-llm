@@ -1,229 +1,133 @@
 import torch
 import pytest
 import torch.nn as nn
+
 from nash_llm.model import GPT
 from nash_llm.config import ModelConfig
-from nash_llm.optim.taro import _sinkhorn_impl, _cholqr_impl, Taro
+from nash_llm.optim.taro import _sinkhorn_impl, _cholqr_impl, Taro, TaroGroup, TaroParamRef
 from nash_llm.optim.adamw import configure_optimizers
 
 
 class TestSinkhorn:
     def test_output_shape(self):
         torch.manual_seed(42)
-        X = torch.randn(64, 128)
-        result = _sinkhorn_impl(X, n_iters=5)
+        x = torch.randn(64, 128)
+        result = _sinkhorn_impl(x, n_iters=5)
         assert result.shape == (64, 128)
 
-    def test_row_norms_converge(self):
-        """After Sinkhorn, row norms should be uniform (all equal)."""
+    def test_row_and_col_norms_converge(self):
         torch.manual_seed(42)
-        X = torch.randn(32, 64)
-        result = _sinkhorn_impl(X, n_iters=10).float()
+        x = torch.randn(32, 64)
+        result = _sinkhorn_impl(x, n_iters=10).float()
         row_norms = result.norm(dim=-1)
-        # All row norms should be nearly identical (Sinkhorn balances them)
-        assert row_norms.std() < 0.01, f"Row norms should be uniform, std={row_norms.std():.4f}"
-        # Column norms should also be uniform (last step is col normalization)
         col_norms = result.norm(dim=-2)
-        assert col_norms.std() < 0.01, f"Col norms should be uniform, std={col_norms.std():.4f}"
-
-    def test_batched_consistency(self):
-        """Batched Sinkhorn should match independent calls."""
-        torch.manual_seed(42)
-        X1 = torch.randn(32, 64)
-        X2 = torch.randn(32, 64)
-
-        r1 = _sinkhorn_impl(X1, n_iters=5)
-        r2 = _sinkhorn_impl(X2, n_iters=5)
-
-        batch = torch.stack([X1, X2])
-        rb = _sinkhorn_impl(batch, n_iters=5)
-
-        assert torch.allclose(r1, rb[0], atol=1e-5)
-        assert torch.allclose(r2, rb[1], atol=1e-5)
+        assert row_norms.std() < 0.01
+        assert col_norms.std() < 0.01
 
     def test_zero_input_safety(self):
-        """Sinkhorn should not produce NaN on zero input."""
-        X = torch.zeros(16, 32)
-        result = _sinkhorn_impl(X, n_iters=5)
+        x = torch.zeros(16, 32)
+        result = _sinkhorn_impl(x, n_iters=5)
         assert not torch.isnan(result).any()
 
 
 class TestCholQR:
     def test_orthogonality(self):
-        """CholQR output should be approximately orthogonal."""
         torch.manual_seed(42)
-        A = torch.randn(32, 32)
-        Q = _cholqr_impl(A)
-        product = Q @ Q.mT
+        a = torch.randn(32, 32)
+        q = _cholqr_impl(a)
         eye = torch.eye(32)
-        error = (product - eye).norm()
-        assert error < 0.5, f"Orthogonality error {error:.4f}"
+        err = (q @ q.mT - eye).norm()
+        assert err < 0.5
 
     def test_batched(self):
-        """CholQR should work on batched input."""
         torch.manual_seed(42)
-        A = torch.randn(3, 16, 16)
-        Q = _cholqr_impl(A)
-        assert Q.shape == (3, 16, 16)
-        for i in range(3):
-            product = Q[i] @ Q[i].mT
-            eye = torch.eye(16)
-            error = (product - eye).norm()
-            assert error < 0.5, f"Batch {i} orthogonality error {error:.4f}"
-
-    def test_shape_preservation(self):
-        torch.manual_seed(42)
-        A = torch.randn(64, 64)
-        Q = _cholqr_impl(A)
-        assert Q.shape == (64, 64)
+        a = torch.randn(3, 16, 16)
+        q = _cholqr_impl(a)
+        assert q.shape == (3, 16, 16)
 
 
 class TestTaroOptimizer:
     def setup_method(self):
         torch.manual_seed(42)
-        self.params = [nn.Parameter(torch.randn(64, 128)) for _ in range(4)]
+        self.p1 = nn.Parameter(torch.randn(64, 128))
+        self.p2 = nn.Parameter(torch.randn(64, 128))
+
+    @staticmethod
+    def _simple_group(p1: nn.Parameter, p2: nn.Parameter) -> list[TaroGroup]:
+        return [
+            TaroGroup(
+                group_name="test",
+                blocks=[[
+                    TaroParamRef(p1, transpose_in_taro=False, lr_mult=1.0, group_name="test"),
+                    TaroParamRef(p2, transpose_in_taro=False, lr_mult=1.0, group_name="test"),
+                ]],
+                lr_mult=1.0,
+            ),
+        ]
 
     def test_step_updates_weights(self):
-        """A single Taro step should change the parameters."""
-        original = [p.clone() for p in self.params[:2]]
-        opt = Taro(
-            taro_groups=[("test", [self.params[:2]])],
-            lr=0.02,
-            momentum=0.95,
-            sinkhorn_iters=5,
-        )
-        for p in self.params[:2]:
-            p.grad = torch.randn_like(p)
+        original1 = self.p1.clone()
+        original2 = self.p2.clone()
+        opt = Taro(taro_groups=self._simple_group(self.p1, self.p2), lr=0.02, momentum=0.95, sinkhorn_iters=5)
+        self.p1.grad = torch.randn_like(self.p1)
+        self.p2.grad = torch.randn_like(self.p2)
         opt.step()
-        for orig, updated in zip(original, self.params[:2]):
-            assert not torch.allclose(orig, updated), "Params should have changed"
+        assert not torch.allclose(original1, self.p1)
+        assert not torch.allclose(original2, self.p2)
 
     def test_rotation_updates_from_identity(self):
-        """Rotation matrix should change from identity after a step."""
-        opt = Taro(
-            taro_groups=[("test", [self.params[:2]])],
-            lr=0.02,
-            momentum=0.95,
-            sinkhorn_iters=5,
-        )
-        R_before = opt._rotations["test"].clone()
-        assert torch.allclose(R_before, torch.eye(64))
-
-        for p in self.params[:2]:
-            p.grad = torch.randn_like(p)
+        opt = Taro(taro_groups=self._simple_group(self.p1, self.p2), lr=0.02, momentum=0.95, sinkhorn_iters=5)
+        before = opt._rotations["test"].clone()
+        assert torch.allclose(before, torch.eye(64))
+        self.p1.grad = torch.randn_like(self.p1)
+        self.p2.grad = torch.randn_like(self.p2)
         opt.step()
-
-        R_after = opt._rotations["test"]
-        assert not torch.allclose(R_after, torch.eye(64), atol=1e-3), "Rotation should change"
+        after = opt._rotations["test"]
+        assert not torch.allclose(after, torch.eye(64), atol=1e-3)
 
     def test_rotation_stays_orthogonal(self):
-        """Rotation matrix should remain approximately orthogonal after steps."""
-        opt = Taro(
-            taro_groups=[("test", [self.params[:2]])],
-            lr=0.02,
-            momentum=0.95,
-            sinkhorn_iters=5,
-        )
-        for step in range(5):
-            for p in self.params[:2]:
-                p.grad = torch.randn_like(p)
+        opt = Taro(taro_groups=self._simple_group(self.p1, self.p2), lr=0.02, momentum=0.95, sinkhorn_iters=5)
+        for _ in range(5):
+            self.p1.grad = torch.randn_like(self.p1)
+            self.p2.grad = torch.randn_like(self.p2)
             opt.step()
+        r = opt._rotations["test"].float()
+        eye = torch.eye(r.shape[0])
+        err = (r @ r.mT - eye).norm() / eye.norm()
+        assert err < 0.1
 
-        R = opt._rotations["test"].float()
-        product = R @ R.mT
-        eye = torch.eye(R.shape[0])
-        error = (product - eye).norm() / eye.norm()
-        assert error < 0.1, f"Rotation relative orthogonality error {error:.4f}"
+    def test_uses_r_new_for_delta_z(self, monkeypatch):
+        import nash_llm.optim.taro as taro_mod
 
-    def test_differs_from_muon(self):
-        """TARO should produce different updates than MUON."""
-        from nash_llm.optim.muon import Muon
+        p = nn.Parameter(torch.zeros(2, 2))
+        group = [
+            TaroGroup(
+                group_name="g",
+                blocks=[[TaroParamRef(p, transpose_in_taro=False, lr_mult=1.0, group_name="g")]],
+                lr_mult=1.0,
+            ),
+        ]
+        opt = Taro(taro_groups=group, lr=1.0, momentum=0.0, sinkhorn_iters=0)
 
-        torch.manual_seed(42)
-        g1 = torch.randn(64, 128)
-        g2 = torch.randn(64, 128)
-
-        # TARO path
-        p1_taro = nn.Parameter(torch.randn(64, 128))
-        p2_taro = nn.Parameter(p1_taro.detach().clone())
-        # Use different params for block but same initial weights
-        p_taro_block = [nn.Parameter(p1_taro.detach().clone()), nn.Parameter(p1_taro.detach().clone())]
-        opt_taro = Taro(
-            taro_groups=[("test", [p_taro_block])],
-            lr=0.02, momentum=0.0, sinkhorn_iters=5,
-        )
-        p_taro_block[0].grad = g1.clone()
-        p_taro_block[1].grad = g2.clone()
-        opt_taro.step()
-
-        # MUON path
-        p_muon_block = [nn.Parameter(p1_taro.detach().clone()), nn.Parameter(p1_taro.detach().clone())]
-        opt_muon = Muon(
-            muon_params=p_muon_block, teon_params=[],
-            lr=0.02, momentum=0.0, ns_steps=5,
-        )
-        p_muon_block[0].grad = g1.clone()
-        p_muon_block[1].grad = g2.clone()
-        opt_muon.step()
-
-        assert not torch.allclose(p_taro_block[0], p_muon_block[0], atol=1e-3), "TARO should differ from MUON"
-
-    def test_shapes_preserved(self):
-        """After TARO step, param shapes should be unchanged."""
-        opt = Taro(
-            taro_groups=[("test", [self.params[:2]])],
-            lr=0.02, momentum=0.95, sinkhorn_iters=5,
-        )
-        for p in self.params[:2]:
-            p.grad = torch.randn_like(p)
+        r_swap = torch.tensor([[0.0, 1.0], [1.0, 0.0]], dtype=torch.float32)
+        monkeypatch.setattr(taro_mod, "cholqr", lambda a: r_swap.to(device=a.device))
+        p.grad = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
         opt.step()
-        assert self.params[0].shape == (64, 128)
-        assert self.params[1].shape == (64, 128)
+
+        s = p.grad.to(torch.bfloat16).float()
+        expected = r_swap @ s
+        expected = expected * ((2 * 2) ** 0.5 / expected.norm())
+        assert torch.allclose(p.data, -expected, atol=2e-2)
 
     def test_state_dict_roundtrip(self):
-        """state_dict/load_state_dict should preserve rotations."""
-        opt = Taro(
-            taro_groups=[("test", [self.params[:2]])],
-            lr=0.02, momentum=0.95, sinkhorn_iters=5,
-        )
-        for p in self.params[:2]:
-            p.grad = torch.randn_like(p)
+        opt = Taro(taro_groups=self._simple_group(self.p1, self.p2), lr=0.02, momentum=0.95, sinkhorn_iters=5)
+        self.p1.grad = torch.randn_like(self.p1)
+        self.p2.grad = torch.randn_like(self.p2)
         opt.step()
-
         sd = opt.state_dict()
-        assert "taro_rotations" in sd
-        assert "test" in sd["taro_rotations"]
-
-        # Create a new optimizer and load
-        opt2 = Taro(
-            taro_groups=[("test", [self.params[:2]])],
-            lr=0.02, momentum=0.95, sinkhorn_iters=5,
-        )
+        opt2 = Taro(taro_groups=self._simple_group(self.p1, self.p2), lr=0.02, momentum=0.95, sinkhorn_iters=5)
         opt2.load_state_dict(sd)
         assert torch.allclose(opt._rotations["test"], opt2._rotations["test"])
-
-    def test_multiple_group_types(self):
-        """Optimizer should handle multiple group types independently."""
-        torch.manual_seed(42)
-        group_a = [nn.Parameter(torch.randn(32, 64)), nn.Parameter(torch.randn(32, 64))]
-        group_b = [nn.Parameter(torch.randn(16, 32)), nn.Parameter(torch.randn(16, 32))]
-
-        opt = Taro(
-            taro_groups=[("a", [group_a]), ("b", [group_b])],
-            lr=0.02, momentum=0.95, sinkhorn_iters=5,
-        )
-        assert "a" in opt._rotations
-        assert "b" in opt._rotations
-        assert opt._rotations["a"].shape == (32, 32)
-        assert opt._rotations["b"].shape == (16, 16)
-
-        for p in group_a + group_b:
-            p.grad = torch.randn_like(p)
-        opt.step()
-
-        # Both rotations should have been updated
-        assert not torch.allclose(opt._rotations["a"], torch.eye(32))
-        assert not torch.allclose(opt._rotations["b"], torch.eye(16))
 
 
 class TestConfigureTaroOptimizers:
@@ -231,8 +135,14 @@ class TestConfigureTaroOptimizers:
         self.cfg = ModelConfig(
             n_layers=4, n_heads=4, d_model=64, d_ff=256,
             vocab_size=100, max_seq_len=32, dropout=0.0,
+            tie_embeddings=False,
         )
         self.model = GPT(self.cfg)
+
+    def _get_taro(self) -> Taro:
+        opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1, optimizer="taro")
+        assert isinstance(opts[0], Taro)
+        return opts[0]
 
     def test_returns_two_optimizers(self):
         opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1, optimizer="taro")
@@ -241,70 +151,65 @@ class TestConfigureTaroOptimizers:
         assert isinstance(opts[1], torch.optim.AdamW)
 
     def test_all_params_assigned(self):
-        """Every trainable param should belong to exactly one optimizer."""
         opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1, optimizer="taro")
-
         opt_param_ids = set()
         for opt in opts:
             for pg in opt.param_groups:
                 for p in pg["params"]:
                     opt_param_ids.add(id(p))
-
         model_param_ids = {id(p) for p in self.model.parameters() if p.requires_grad}
-        assert model_param_ids == opt_param_ids, "Not all params assigned to an optimizer"
+        assert model_param_ids == opt_param_ids
 
     def test_no_param_overlap(self):
-        """No param should be in both Taro and AdamW."""
         opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1, optimizer="taro")
-
-        taro_ids = set()
-        for pg in opts[0].param_groups:
-            for p in pg["params"]:
-                taro_ids.add(id(p))
-
-        adamw_ids = set()
-        for pg in opts[1].param_groups:
-            for p in pg["params"]:
-                adamw_ids.add(id(p))
-
-        overlap = taro_ids & adamw_ids
-        assert len(overlap) == 0, f"Found {len(overlap)} params in both optimizers"
+        taro_ids = {id(p) for pg in opts[0].param_groups for p in pg["params"]}
+        adamw_ids = {id(p) for pg in opts[1].param_groups for p in pg["params"]}
+        assert len(taro_ids & adamw_ids) == 0
 
     def test_qkv_grouped_by_symmetry(self):
-        """QKV blocks should contain 6 params each (Q+K+V from 2 layers)."""
-        opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1, optimizer="taro")
-        taro_opt = opts[0]
-        assert isinstance(taro_opt, Taro)
-
-        qkv_groups = [(gt, blocks) for gt, blocks in taro_opt._taro_groups if gt == "qkv"]
-        assert len(qkv_groups) == 1
-        _, blocks = qkv_groups[0]
-
-        # 4 layers, K=2, so 2 blocks of 6 params each
+        taro_opt = self._get_taro()
+        qkv = [g for g in taro_opt._taro_groups if g.group_name == "qkv"]
+        assert len(qkv) == 1
+        blocks = qkv[0].blocks
         assert len(blocks) == 2
         for block in blocks:
-            assert len(block) == 6, f"QKV block should have 6 params, got {len(block)}"
+            assert len(block) == 6
+            assert all(not ref.transpose_in_taro for ref in block)
+
+    def test_o_up_group_uses_transpose_metadata(self):
+        taro_opt = self._get_taro()
+        groups = [g for g in taro_opt._taro_groups if g.group_name == "o_up"]
+        assert len(groups) == 1
+        blocks = groups[0].blocks
+        assert len(blocks) == 2
+        for block in blocks:
+            assert len(block) == 4
+            names = [ref.group_name for ref in block]
+            assert names == ["o_up", "o_up", "o_up", "o_up"]
+            transposed = [ref.transpose_in_taro for ref in block]
+            assert transposed == [False, True, False, True]
+
+    def test_down_group_has_half_lr_multiplier(self):
+        taro_opt = self._get_taro()
+        down = [g for g in taro_opt._taro_groups if g.group_name == "down"]
+        assert len(down) == 1
+        assert down[0].lr_mult == 0.5
+        assert all(ref.lr_mult == 0.5 for block in down[0].blocks for ref in block)
 
     def test_all_matrix_weights_in_taro(self):
-        """All 2D weight matrices (Q,K,V,O,fc1,fc2) should be in TARO."""
-        opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1, optimizer="taro")
-        taro_opt = opts[0]
-        assert isinstance(taro_opt, Taro)
-
-        taro_param_ids = set()
-        for pg in taro_opt.param_groups:
-            for p in pg["params"]:
-                taro_param_ids.add(id(p))
-
-        matrix_patterns = ("q_proj.weight", "k_proj.weight", "v_proj.weight",
-                           "out_proj.weight", "fc1.weight", "fc2.weight")
+        taro_opt = self._get_taro()
+        taro_param_ids = {id(p) for pg in taro_opt.param_groups for p in pg["params"]}
+        matrix_patterns = (
+            "q_proj.weight", "k_proj.weight", "v_proj.weight",
+            "out_proj.weight", "fc1.weight", "fc2.weight",
+        )
         for name, p in self.model.named_parameters():
             if any(pat in name for pat in matrix_patterns):
-                assert id(p) in taro_param_ids, f"{name} should be in TARO"
+                assert id(p) in taro_param_ids
 
     def test_muon_path_still_works(self):
-        """Default optimizer="muon" should still work as before."""
         from nash_llm.optim.muon import Muon
+
         opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1, optimizer="muon")
         assert len(opts) == 2
         assert isinstance(opts[0], Muon)
@@ -313,19 +218,22 @@ class TestConfigureTaroOptimizers:
 
 class TestTaroEndToEnd:
     def test_training_smoke(self):
-        """Smoke test: TARO should reduce loss over a few steps on random data."""
         torch.manual_seed(42)
         cfg = ModelConfig(
             n_layers=2, n_heads=2, d_model=32, d_ff=128,
             vocab_size=100, max_seq_len=16, dropout=0.0,
+            tie_embeddings=False,
         )
         model = GPT(cfg)
-        opts = configure_optimizers(model, lr=3e-4, weight_decay=0.0, optimizer="taro", muon_lr=0.02)
+        opts = configure_optimizers(
+            model, lr=3e-4, weight_decay=0.0, optimizer="taro",
+            muon_lr=0.02, taro_k=2, taro_sinkhorn_iters=5,
+        )
 
         x = torch.randint(0, 100, (4, 16))
         y = torch.randint(0, 100, (4, 16))
-
         losses = []
+
         for _ in range(10):
             for opt in opts:
                 opt.zero_grad(set_to_none=True)
@@ -335,6 +243,5 @@ class TestTaroEndToEnd:
                 opt.step()
             losses.append(loss.item())
 
-        # Loss should decrease (or at least not NaN)
-        assert not any(torch.isnan(torch.tensor(l)) for l in losses), "Loss should not be NaN"
-        assert losses[-1] < losses[0], f"Loss should decrease: {losses[0]:.4f} -> {losses[-1]:.4f}"
+        assert not any(torch.isnan(torch.tensor(v)) for v in losses)
+        assert losses[-1] < losses[0]

@@ -83,3 +83,45 @@ class TestCheckpoint:
 
         with pytest.raises(ValueError, match="single optimizer state"):
             load_checkpoint(path, model2, optimizers)
+
+    def test_load_checkpoint_norm_type_mismatch_raises(self, tmp_path):
+        path = str(tmp_path / "ckpt.pt")
+        cfg_src = ModelConfig(
+            n_layers=2, n_heads=4, d_model=64, d_ff=256,
+            vocab_size=100, max_seq_len=32, dropout=0.0,
+            norm_type="layernorm",
+        )
+        model_src = GPT(cfg_src)
+        opts_src = configure_optimizers(model_src, lr=3e-4, weight_decay=0.1)
+        save_checkpoint(path, model_src, opts_src, step=1, config=NashConfig(model=cfg_src))
+
+        cfg_dst = ModelConfig(
+            n_layers=2, n_heads=4, d_model=64, d_ff=256,
+            vocab_size=100, max_seq_len=32, dropout=0.0,
+            norm_type="rmsnorm",
+        )
+        model_dst = GPT(cfg_dst)
+        opts_dst = configure_optimizers(model_dst, lr=3e-4, weight_decay=0.1)
+        with pytest.raises(ValueError, match="norm_type"):
+            load_checkpoint(path, model_dst, opts_dst)
+
+    def test_load_checkpoint_tie_embeddings_mismatch_raises(self, tmp_path):
+        path = str(tmp_path / "ckpt.pt")
+        cfg_src = ModelConfig(
+            n_layers=2, n_heads=4, d_model=64, d_ff=256,
+            vocab_size=100, max_seq_len=32, dropout=0.0,
+            tie_embeddings=True,
+        )
+        model_src = GPT(cfg_src)
+        opts_src = configure_optimizers(model_src, lr=3e-4, weight_decay=0.1)
+        save_checkpoint(path, model_src, opts_src, step=1, config=NashConfig(model=cfg_src))
+
+        cfg_dst = ModelConfig(
+            n_layers=2, n_heads=4, d_model=64, d_ff=256,
+            vocab_size=100, max_seq_len=32, dropout=0.0,
+            tie_embeddings=False,
+        )
+        model_dst = GPT(cfg_dst)
+        opts_dst = configure_optimizers(model_dst, lr=3e-4, weight_decay=0.1)
+        with pytest.raises(ValueError, match="tie_embeddings"):
+            load_checkpoint(path, model_dst, opts_dst)

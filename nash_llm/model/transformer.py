@@ -3,14 +3,21 @@ import torch.nn as nn
 from nash_llm.config import ModelConfig
 from nash_llm.model.attention import MultiHeadAttention
 from nash_llm.model.layers import FeedForward
+from nash_llm.model.norms import RMSNorm
+
+
+def _build_norm(config: ModelConfig) -> nn.Module:
+    if config.norm_type == "rmsnorm":
+        return RMSNorm(config.d_model, eps=config.rmsnorm_eps)
+    return nn.LayerNorm(config.d_model)
 
 
 class TransformerBlock(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
-        self.ln1 = nn.LayerNorm(config.d_model)
+        self.ln1 = _build_norm(config)
         self.attn = MultiHeadAttention(config)
-        self.ln2 = nn.LayerNorm(config.d_model)
+        self.ln2 = _build_norm(config)
         self.ff = FeedForward(config)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -31,10 +38,11 @@ class GPT(nn.Module):
         self.blocks = nn.ModuleList([
             TransformerBlock(config) for _ in range(config.n_layers)
         ])
-        self.ln_f = nn.LayerNorm(config.d_model)
+        self.ln_f = _build_norm(config)
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
-        self.lm_head.weight = self.token_emb.weight
+        if config.tie_embeddings:
+            self.lm_head.weight = self.token_emb.weight
 
         self.apply(self._init_weights)
 

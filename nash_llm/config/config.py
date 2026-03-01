@@ -11,6 +11,9 @@ class ModelConfig:
     vocab_size: int = 50257
     max_seq_len: int = 1024
     dropout: float = 0.1
+    norm_type: str = "layernorm"  # "layernorm" | "rmsnorm"
+    rmsnorm_eps: float = 1e-6
+    tie_embeddings: bool = True
 
 
 @dataclass
@@ -31,6 +34,9 @@ class TrainConfig:
     muon_momentum: float = 0.95
     ns_steps: int = 5
     optimizer: str = "muon"  # "muon" or "taro"
+    taro_k: int = 2
+    taro_sinkhorn_iters: int = 5
+    taro_down_lr_mult: float = 0.5
 
 
 @dataclass
@@ -78,6 +84,15 @@ def _validate_train_precision(value: str) -> str:
     return precision
 
 
+def _validate_model_norm_type(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"Unsupported model.norm_type '{value}'. Expected one of: layernorm, rmsnorm")
+    norm_type = value.lower()
+    if norm_type not in {"layernorm", "rmsnorm"}:
+        raise ValueError(f"Unsupported model.norm_type '{value}'. Expected one of: layernorm, rmsnorm")
+    return norm_type
+
+
 def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
     for key, value in overrides.items():
         parts = key.split(".")
@@ -101,6 +116,8 @@ def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
             parsed = field_type(value)
         if section_name == "train" and field_name == "precision":
             parsed = _validate_train_precision(str(parsed))
+        if section_name == "model" and field_name == "norm_type":
+            parsed = _validate_model_norm_type(str(parsed))
         setattr(section, field_name, parsed)
     return cfg
 
@@ -112,6 +129,7 @@ def load_config(config_path: str | None = None, overrides: dict[str, str] | None
             raw = yaml.safe_load(f) or {}
         if "model" in raw:
             cfg.model = ModelConfig(**{**vars(cfg.model), **raw["model"]})
+            cfg.model.norm_type = _validate_model_norm_type(cfg.model.norm_type)
         if "train" in raw:
             cfg.train = TrainConfig(**{**vars(cfg.train), **raw["train"]})
             cfg.train.precision = _validate_train_precision(cfg.train.precision)

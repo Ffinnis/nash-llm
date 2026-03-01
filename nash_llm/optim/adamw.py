@@ -1,8 +1,20 @@
+import inspect
+import re
+
 import torch
 import torch.nn as nn
-import inspect
 
 from nash_llm.optim.muon import Muon
+
+
+_BLOCK_INDEX_RE = re.compile(r"^blocks\.(\d+)\.")
+
+
+def _layer_index_from_name(name: str) -> int | None:
+    match = _BLOCK_INDEX_RE.match(name)
+    if match is None:
+        return None
+    return int(match.group(1))
 
 
 def _configure_muon_optimizers(
@@ -37,14 +49,13 @@ def _configure_muon_optimizers(
                 muon_param_ids.add(id(param))
                 break
 
-    K = 2
+    k = 2
     for pattern in teon_patterns:
         params = teon_by_type[pattern]
-        num_groups = len(params) // K
+        num_groups = len(params) // k
         for i in range(num_groups):
-            teon_groups.append(params[i * K : (i + 1) * K])
-        # Remainder (odd layer count) goes to muon_params as per-layer
-        remainder_start = num_groups * K
+            teon_groups.append(params[i * k : (i + 1) * k])
+        remainder_start = num_groups * k
         for p in params[remainder_start:]:
             muon_params.append(p)
 
@@ -65,7 +76,6 @@ def _configure_muon_optimizers(
             else:
                 adamw_decay.append(param)
 
-    # Build Muon optimizer
     muon_opt = Muon(
         muon_params=muon_params,
         teon_params=teon_groups,
@@ -87,81 +97,124 @@ def _configure_taro_optimizers(
     ns_steps: int,
     betas: tuple[float, float],
     fused: bool | None,
+    taro_k: int,
+    taro_sinkhorn_iters: int,
+    taro_down_lr_mult: float,
 ) -> list[torch.optim.Optimizer]:
-    """Create TARO+AdamW optimizer pair.
+    """Create TARO+AdamW optimizer pair with symmetry-position grouping."""
+    from nash_llm.optim.taro import Taro, TaroGroup, TaroParamRef
 
-    TARO groups all 2D matrix weights by type, each with K=2 cross-layer stacking
-    and independent rotation matrices: Q, K, V, O, UP, DOWN.
-    AdamW handles embeddings, norms, biases.
-    """
-    from nash_llm.optim.taro import Taro
+    if taro_k <= 0:
+        raise ValueError(f"taro_k must be >= 1, got {taro_k}")
+    if taro_sinkhorn_iters <= 0:
+        raise ValueError(f"taro_sinkhorn_iters must be >= 1, got {taro_sinkhorn_iters}")
+
+    q_by_layer: dict[int, nn.Parameter] = {}
+    k_by_layer: dict[int, nn.Parameter] = {}
+    v_by_layer: dict[int, nn.Parameter] = {}
+    o_by_layer: dict[int, nn.Parameter] = {}
+    up_by_layer: dict[int, nn.Parameter] = {}
+    down_by_layer: dict[int, nn.Parameter] = {}
 
     taro_param_ids: set[int] = set()
-    adamw_decay: list[nn.Parameter] = []
-    adamw_no_decay: list[nn.Parameter] = []
-
-    # Collect params by type — separate Q/K/V for independent rotation matrices
-    group_patterns: dict[str, tuple[str, ...]] = {
-        "q": ("q_proj.weight",),
-        "k": ("k_proj.weight",),
-        "v": ("v_proj.weight",),
-        "o": ("out_proj.weight",),
-        "up": ("fc1.weight",),
-        "down": ("fc2.weight",),
-    }
-
-    # Gather params by group type
-    params_by_type: dict[str, list[nn.Parameter]] = {k: [] for k in group_patterns}
+    adamw_specs: list[tuple[nn.Parameter, float, float]] = []
 
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        matched = False
-        for group_type, patterns in group_patterns.items():
-            for pattern in patterns:
-                if pattern in name:
-                    params_by_type[group_type].append(param)
-                    taro_param_ids.add(id(param))
-                    matched = True
-                    break
-            if matched:
-                break
-        if not matched:
-            if param.ndim < 2:
-                adamw_no_decay.append(param)
-            else:
-                adamw_decay.append(param)
+        layer_idx = _layer_index_from_name(name)
+        if layer_idx is not None:
+            if name.endswith("attn.q_proj.weight"):
+                q_by_layer[layer_idx] = param
+                taro_param_ids.add(id(param))
+                continue
+            if name.endswith("attn.k_proj.weight"):
+                k_by_layer[layer_idx] = param
+                taro_param_ids.add(id(param))
+                continue
+            if name.endswith("attn.v_proj.weight"):
+                v_by_layer[layer_idx] = param
+                taro_param_ids.add(id(param))
+                continue
+            if name.endswith("attn.out_proj.weight"):
+                o_by_layer[layer_idx] = param
+                taro_param_ids.add(id(param))
+                continue
+            if name.endswith("ff.fc1.weight"):
+                up_by_layer[layer_idx] = param
+                taro_param_ids.add(id(param))
+                continue
+            if name.endswith("ff.fc2.weight"):
+                down_by_layer[layer_idx] = param
+                taro_param_ids.add(id(param))
+                continue
 
-    # Build TARO groups with K=2 cross-layer stacking
-    K = 2
-    taro_groups: list[tuple[str, list[list[nn.Parameter]]]] = []
+        lr_mult = 1.0
+        if name == "lm_head.weight":
+            lr_mult = 0.5
+        decay = weight_decay if param.ndim >= 2 else 0.0
+        adamw_specs.append((param, lr_mult, decay))
 
-    for group_type in ("q", "k", "v", "o", "up", "down"):
-        params = params_by_type[group_type]
-        if not params:
-            continue
+    # Build TARO groups by symmetry position
+    taro_groups: list[TaroGroup] = []
+    layer_ids = sorted(set(q_by_layer) | set(k_by_layer) | set(v_by_layer) | set(o_by_layer) | set(up_by_layer) | set(down_by_layer))
 
-        blocks: list[list[nn.Parameter]] = []
-        # All groups: simple K=2 cross-layer stacking
-        num_groups = len(params) // K
-        for i in range(num_groups):
-            blocks.append(params[i * K : (i + 1) * K])
-        remainder_start = num_groups * K
-        if remainder_start < len(params):
-            blocks.append(params[remainder_start:])
+    qkv_blocks: list[list[TaroParamRef]] = []
+    o_up_blocks: list[list[TaroParamRef]] = []
+    down_blocks: list[list[TaroParamRef]] = []
 
-        taro_groups.append((group_type, blocks))
+    for i in range(0, len(layer_ids), taro_k):
+        chunk = layer_ids[i : i + taro_k]
 
-    # Sinkhorn is O(mn) per iter vs Polar Express O(m²n) — use more iterations
+        qkv_block: list[TaroParamRef] = []
+        o_up_block: list[TaroParamRef] = []
+        down_block: list[TaroParamRef] = []
+
+        for layer_idx in chunk:
+            if layer_idx in q_by_layer and layer_idx in k_by_layer and layer_idx in v_by_layer:
+                qkv_block.extend([
+                    TaroParamRef(q_by_layer[layer_idx], transpose_in_taro=False, lr_mult=1.0, group_name="qkv"),
+                    TaroParamRef(k_by_layer[layer_idx], transpose_in_taro=False, lr_mult=1.0, group_name="qkv"),
+                    TaroParamRef(v_by_layer[layer_idx], transpose_in_taro=False, lr_mult=1.0, group_name="qkv"),
+                ])
+            if layer_idx in o_by_layer:
+                o_up_block.append(TaroParamRef(o_by_layer[layer_idx], transpose_in_taro=False, lr_mult=1.0, group_name="o_up"))
+            if layer_idx in up_by_layer:
+                # Canonical orientation aligns residual-stream dimension on rows.
+                o_up_block.append(TaroParamRef(up_by_layer[layer_idx], transpose_in_taro=True, lr_mult=1.0, group_name="o_up"))
+            if layer_idx in down_by_layer:
+                down_block.append(
+                    TaroParamRef(
+                        down_by_layer[layer_idx],
+                        transpose_in_taro=False,
+                        lr_mult=taro_down_lr_mult,
+                        group_name="down",
+                    )
+                )
+
+        if qkv_block:
+            qkv_blocks.append(qkv_block)
+        if o_up_block:
+            o_up_blocks.append(o_up_block)
+        if down_block:
+            down_blocks.append(down_block)
+
+    if qkv_blocks:
+        taro_groups.append(TaroGroup(group_name="qkv", blocks=qkv_blocks, lr_mult=1.0))
+    if o_up_blocks:
+        taro_groups.append(TaroGroup(group_name="o_up", blocks=o_up_blocks, lr_mult=1.0))
+    if down_blocks:
+        taro_groups.append(TaroGroup(group_name="down", blocks=down_blocks, lr_mult=taro_down_lr_mult))
+
     taro_opt = Taro(
         taro_groups=taro_groups,
         lr=muon_lr,
         momentum=muon_momentum,
         weight_decay=weight_decay,
-        sinkhorn_iters=ns_steps * 5,
+        sinkhorn_iters=taro_sinkhorn_iters if taro_sinkhorn_iters > 0 else ns_steps,
     )
 
-    return [taro_opt] + _build_adamw(adamw_decay, adamw_no_decay, lr, weight_decay, betas, fused)
+    return [taro_opt] + _build_adamw_with_lr_multipliers(adamw_specs, lr, betas, fused)
 
 
 def _build_adamw(
@@ -195,6 +248,42 @@ def _build_adamw(
     return [torch.optim.AdamW(adamw_groups, **adamw_kwargs)]
 
 
+def _build_adamw_with_lr_multipliers(
+    specs: list[tuple[nn.Parameter, float, float]],
+    lr: float,
+    betas: tuple[float, float],
+    fused: bool | None,
+) -> list[torch.optim.Optimizer]:
+    grouped: dict[tuple[float, float], list[nn.Parameter]] = {}
+    for param, lr_mult, decay in specs:
+        key = (lr_mult, decay)
+        grouped.setdefault(key, []).append(param)
+
+    adamw_groups = []
+    for (lr_mult, decay), params in grouped.items():
+        adamw_groups.append({
+            "params": params,
+            "weight_decay": decay,
+            "lr": lr * lr_mult,
+            "lr_mult": lr_mult,
+        })
+
+    if not adamw_groups:
+        return []
+
+    adamw_kwargs: dict = {"lr": lr, "betas": betas}
+    can_use_fused = torch.cuda.is_available() and "fused" in inspect.signature(torch.optim.AdamW).parameters
+    if fused is None:
+        if can_use_fused:
+            adamw_kwargs["fused"] = True
+    elif fused:
+        if not can_use_fused:
+            raise ValueError("Fused AdamW requested but not supported in this runtime")
+        adamw_kwargs["fused"] = True
+
+    return [torch.optim.AdamW(adamw_groups, **adamw_kwargs)]
+
+
 def configure_optimizers(
     model: nn.Module,
     lr: float,
@@ -205,17 +294,30 @@ def configure_optimizers(
     betas: tuple[float, float] = (0.9, 0.95),
     fused: bool | None = None,
     optimizer: str = "muon",
+    taro_k: int = 2,
+    taro_sinkhorn_iters: int = 5,
+    taro_down_lr_mult: float = 0.5,
 ) -> list[torch.optim.Optimizer]:
     """Create optimizer pair.
 
     Returns [Muon/Taro, AdamW]:
     - optimizer="muon": TEON cross-layer Q/K/V stacking + per-layer ortho for out_proj, MLP
-    - optimizer="taro": TARO adaptive rotation for all 2D weights by symmetry group
+    - optimizer="taro": TARO adaptive rotation for symmetry-position groups
     - AdamW: embeddings, layer norms, biases, and remaining params
     """
     if optimizer == "taro":
         return _configure_taro_optimizers(
-            model, lr, weight_decay, muon_lr, muon_momentum, ns_steps, betas, fused,
+            model,
+            lr,
+            weight_decay,
+            muon_lr,
+            muon_momentum,
+            ns_steps,
+            betas,
+            fused,
+            taro_k=taro_k,
+            taro_sinkhorn_iters=taro_sinkhorn_iters,
+            taro_down_lr_mult=taro_down_lr_mult,
         )
     return _configure_muon_optimizers(
         model, lr, weight_decay, muon_lr, muon_momentum, ns_steps, betas, fused,

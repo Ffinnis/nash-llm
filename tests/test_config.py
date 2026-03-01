@@ -19,6 +19,14 @@ class TestModelConfig:
         assert cfg.n_layers == 6
         assert cfg.d_model == 512
         assert cfg.n_heads == 12
+        assert cfg.norm_type == "layernorm"
+        assert cfg.tie_embeddings is True
+
+    def test_norm_defaults(self):
+        cfg = ModelConfig()
+        assert cfg.norm_type == "layernorm"
+        assert cfg.rmsnorm_eps == 1e-6
+        assert cfg.tie_embeddings is True
 
 
 class TestTrainConfig:
@@ -38,6 +46,9 @@ class TestTrainConfig:
         assert cfg.muon_lr == 0.02
         assert cfg.muon_momentum == 0.95
         assert cfg.ns_steps == 5
+        assert cfg.taro_k == 2
+        assert cfg.taro_sinkhorn_iters == 5
+        assert cfg.taro_down_lr_mult == 0.5
 
     def test_custom(self):
         cfg = TrainConfig(learning_rate=1e-4, batch_size=32)
@@ -110,11 +121,22 @@ class TestLoadConfig:
         with pytest.raises(ValueError, match="Unsupported train.precision"):
             load_config(config_path=None, overrides={"precision": "fp32"})
 
+    def test_invalid_norm_type_override_raises(self):
+        with pytest.raises(ValueError, match="Unsupported model.norm_type"):
+            load_config(config_path=None, overrides={"model.norm_type": "batchnorm"})
+
     def test_invalid_precision_yaml_raises(self, tmp_path):
         yaml_content = {"train": {"precision": "fp32"}}
         yaml_path = tmp_path / "test.yaml"
         yaml_path.write_text(yaml.dump(yaml_content))
         with pytest.raises(ValueError, match="Unsupported train.precision"):
+            load_config(str(yaml_path))
+
+    def test_invalid_norm_type_yaml_raises(self, tmp_path):
+        yaml_content = {"model": {"norm_type": "batchnorm"}}
+        yaml_path = tmp_path / "test.yaml"
+        yaml_path.write_text(yaml.dump(yaml_content))
+        with pytest.raises(ValueError, match="Unsupported model.norm_type"):
             load_config(str(yaml_path))
 
     def test_muon_lr_yaml(self, tmp_path):
@@ -123,3 +145,12 @@ class TestLoadConfig:
         yaml_path.write_text(yaml.dump(yaml_content))
         cfg = load_config(str(yaml_path))
         assert cfg.train.muon_lr == 0.03
+
+    def test_taro_fields_yaml(self, tmp_path):
+        yaml_content = {"train": {"taro_k": 3, "taro_sinkhorn_iters": 7, "taro_down_lr_mult": 0.4}}
+        yaml_path = tmp_path / "test.yaml"
+        yaml_path.write_text(yaml.dump(yaml_content))
+        cfg = load_config(str(yaml_path))
+        assert cfg.train.taro_k == 3
+        assert cfg.train.taro_sinkhorn_iters == 7
+        assert cfg.train.taro_down_lr_mult == 0.4

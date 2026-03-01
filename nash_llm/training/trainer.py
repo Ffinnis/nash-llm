@@ -77,6 +77,9 @@ class Trainer:
             ns_steps=config.train.ns_steps,
             fused=use_fused_adamw,
             optimizer=config.train.optimizer,
+            taro_k=config.train.taro_k,
+            taro_sinkhorn_iters=config.train.taro_sinkhorn_iters,
+            taro_down_lr_mult=config.train.taro_down_lr_mult,
         )
         # Keep self.optimizer pointing to the first optimizer for backward compat
         self.optimizer = self.optimizers[0]
@@ -144,8 +147,18 @@ class Trainer:
         for pg in self.optimizers[0].param_groups:
             pg["lr"] = muon_lr
         for pg in self.optimizers[1].param_groups:
-            pg["lr"] = lr
+            pg["lr"] = lr * float(pg.get("lr_mult", 1.0))
         return lr
+
+    @staticmethod
+    def _compute_grad_norm(parameters) -> float:
+        total = torch.zeros((), device="cpu")
+        for p in parameters:
+            if p.grad is None:
+                continue
+            grad = p.grad.detach().float()
+            total += grad.pow(2).sum().cpu()
+        return float(torch.sqrt(total).item())
 
     @staticmethod
     def _progress_bar(progress: float, width: int = 30) -> str:
@@ -242,12 +255,15 @@ class Trainer:
                     loss.backward()
                 accum_loss += loss.detach()
 
+            grad_norm: float
             if cfg.grad_clip > 0:
                 if self.use_grad_scaler:
                     assert self.scaler is not None
                     for opt in self.optimizers:
                         self.scaler.unscale_(opt)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.grad_clip)
+                grad_norm = float(torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.grad_clip).item())
+            else:
+                grad_norm = self._compute_grad_norm(self.model.parameters())
 
             if self.use_grad_scaler:
                 assert self.scaler is not None
@@ -258,16 +274,35 @@ class Trainer:
                 for opt in self.optimizers:
                     opt.step()
 
+            taro_metrics: dict[str, float] = {}
+            taro_opt = self.optimizers[0]
+            get_step_metrics = getattr(taro_opt, "get_step_metrics", None)
+            if callable(get_step_metrics):
+                taro_metrics = get_step_metrics()
+
             total_tokens_processed += tokens_processed
             elapsed = max(time.perf_counter() - step_started_at, 1e-8)
             tokens_per_sec = tokens_processed / elapsed
             progress_metrics = self._build_progress_metrics(step, tokens_per_sec, total_tokens_processed)
             train_loss = float(accum_loss.item())
 
-            record = {"step": step, "train_loss": train_loss, "lr": lr, **progress_metrics}
+            record = {
+                "step": step,
+                "train_loss": train_loss,
+                "lr": lr,
+                "grad_norm": grad_norm,
+                **taro_metrics,
+                **progress_metrics,
+            }
 
             if step % self.config.metrics.log_interval == 0:
-                train_metrics = {"train_loss": train_loss, "lr": lr, **progress_metrics}
+                train_metrics = {
+                    "train_loss": train_loss,
+                    "lr": lr,
+                    "grad_norm": grad_norm,
+                    **taro_metrics,
+                    **progress_metrics,
+                }
                 self.logger.log(train_metrics, step=step)
                 print(self._format_progress_log(train_metrics))
 

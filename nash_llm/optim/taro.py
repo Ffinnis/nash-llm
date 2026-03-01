@@ -1,48 +1,36 @@
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.optim import Optimizer
 
 
-def _sinkhorn_impl(X: Tensor, n_iters: int = 5) -> Tensor:
-    """Alternating row/col L2 normalization (Sinkhorn balancing).
-
-    Operates in bfloat16 for speed.  Supports batched input (..., m, n).
-    """
-    Y = X.bfloat16()
+def _sinkhorn_impl(x: Tensor, n_iters: int = 5) -> Tensor:
+    """Alternating row/column L2 normalization."""
+    y = x.bfloat16()
     for _ in range(n_iters):
-        # Row normalization
-        row_norms = Y.norm(dim=-1, keepdim=True).clamp(min=1e-7)
-        Y = Y / row_norms
-        # Column normalization
-        col_norms = Y.norm(dim=-2, keepdim=True).clamp(min=1e-7)
-        Y = Y / col_norms
-    return Y
+        row_norms = y.norm(dim=-1, keepdim=True).clamp(min=1e-7)
+        y = y / row_norms
+        col_norms = y.norm(dim=-2, keepdim=True).clamp(min=1e-7)
+        y = y / col_norms
+    return y
 
 
-def _cholqr_impl(A: Tensor, eps: float = 1e-6) -> Tensor:
-    """CholQR projection onto O(m): Q = A R^{-1} via Cholesky of A^T A.
-
-    Standard CholQR: A^T A = L L^T, R = L^T, Q = A L^{-T}.
-    Input: (..., m, m) square matrix.
-    Returns: (..., m, m) orthogonal matrix.
-    Falls back to torch.linalg.qr if Cholesky fails.
-    """
-    ATA = A.mT @ A
-    eye = torch.eye(A.shape[-1], device=A.device, dtype=A.dtype)
-    ATA = ATA + eps * eye
-
+def _cholqr_impl(a: Tensor, eps: float = 1e-6) -> Tensor:
+    """Project onto O(m) with shifted CholQR."""
+    ata = a.mT @ a
+    eye = torch.eye(a.shape[-1], device=a.device, dtype=a.dtype)
+    ata = ata + eps * eye
     try:
-        L = torch.linalg.cholesky(ATA)  # A^T A = L L^T
-        # Q = A L^{-T}: solve L X = A^T => X = L^{-1} A^T => X^T = A L^{-T} = Q
-        X = torch.linalg.solve_triangular(L, A.mT, upper=False)
-        Q = X.mT
+        l = torch.linalg.cholesky(ata)
+        x = torch.linalg.solve_triangular(l, a.mT, upper=False)
+        q = x.mT
     except torch.linalg.LinAlgError:
-        Q, _ = torch.linalg.qr(A)
-    return Q
+        q, _ = torch.linalg.qr(a)
+    return q
 
 
-# torch.compile for GPU acceleration
 if torch.cuda.is_available():
     sinkhorn = torch.compile(_sinkhorn_impl)
     cholqr = torch.compile(_cholqr_impl)
@@ -51,35 +39,37 @@ else:
     cholqr = _cholqr_impl
 
 
+@dataclass(frozen=True)
+class TaroParamRef:
+    param: nn.Parameter
+    transpose_in_taro: bool
+    lr_mult: float
+    group_name: str
+
+
+@dataclass
+class TaroGroup:
+    group_name: str
+    blocks: list[list[TaroParamRef]]
+    lr_mult: float = 1.0
+
+
 class Taro(Optimizer):
-    """TARO optimizer: TEON tensorized gradients + ARO adaptive rotation.
-
-    Uses Sinkhorn normalization instead of Polar Express, and maintains
-    persistent rotation matrices per symmetry group.
-
-    Args:
-        taro_groups: list of (group_type, blocks) where group_type is a string
-            identifier (e.g. "qkv", "o", "up", "down") and blocks is a list
-            of param lists. Each inner list contains K params to stack.
-        lr: learning rate
-        momentum: momentum coefficient
-        weight_decay: decoupled weight decay
-        sinkhorn_iters: number of Sinkhorn normalization iterations
-    """
+    """TARO optimizer: tensorized ARO-style rotation with Sinkhorn base map."""
 
     def __init__(
         self,
-        taro_groups: list[tuple[str, list[list[nn.Parameter]]]],
+        taro_groups: list[TaroGroup],
         lr: float = 0.02,
         momentum: float = 0.95,
         weight_decay: float = 0.0,
         sinkhorn_iters: int = 5,
     ):
-        # Flatten all params for Optimizer base class registration
         all_params: list[nn.Parameter] = []
-        for _group_type, blocks in taro_groups:
-            for block in blocks:
-                all_params.extend(block)
+        for group in taro_groups:
+            for block in group.blocks:
+                for ref in block:
+                    all_params.append(ref.param)
 
         defaults = dict(
             lr=lr,
@@ -90,16 +80,49 @@ class Taro(Optimizer):
         super().__init__(all_params, defaults)
 
         self._taro_groups = taro_groups
-
-        # Initialize rotation matrices to identity, one per group type.
-        # Dimensions are inferred from first param in each group.
         self._rotations: dict[str, Tensor] = {}
-        for group_type, blocks in taro_groups:
-            if group_type in self._rotations or not blocks or not blocks[0]:
+        self._last_step_metrics: dict[str, float] = {}
+
+        for group in taro_groups:
+            first_ref = None
+            for block in group.blocks:
+                if block:
+                    first_ref = block[0]
+                    break
+            if first_ref is None:
                 continue
-            m = blocks[0][0].shape[0]
-            R = torch.eye(m, device=blocks[0][0].device, dtype=torch.float32)
-            self._rotations[group_type] = R
+            shape = self._canonical_shape(first_ref)
+            m = shape[0]
+            self._rotations[group.group_name] = torch.eye(
+                m,
+                device=first_ref.param.device,
+                dtype=torch.float32,
+            )
+
+    @staticmethod
+    def _canonical_shape(ref: TaroParamRef) -> tuple[int, int]:
+        if ref.transpose_in_taro:
+            return ref.param.shape[1], ref.param.shape[0]
+        return ref.param.shape[0], ref.param.shape[1]
+
+    @staticmethod
+    def _to_canonical(t: Tensor, ref: TaroParamRef) -> Tensor:
+        return t.mT if ref.transpose_in_taro else t
+
+    @staticmethod
+    def _to_native(t: Tensor, ref: TaroParamRef) -> Tensor:
+        return t.mT if ref.transpose_in_taro else t
+
+    def _momentum_buffer(self, ref: TaroParamRef) -> Tensor:
+        state = self.state[ref.param]
+        if len(state) == 0:
+            m, n = self._canonical_shape(ref)
+            state["momentum_buffer"] = torch.zeros(
+                (m, n),
+                device=ref.param.device,
+                dtype=ref.param.dtype,
+            )
+        return state["momentum_buffer"]
 
     @torch.no_grad()
     def step(self, closure=None) -> float | None:  # type: ignore[override]
@@ -108,92 +131,120 @@ class Taro(Optimizer):
             with torch.enable_grad():
                 loss = closure()
 
-        lr = self.defaults["lr"]
+        base_lr = self.param_groups[0].get("lr", self.defaults["lr"])
         mu = self.defaults["momentum"]
         wd = self.defaults["weight_decay"]
         n_iters = self.defaults["sinkhorn_iters"]
+        self._last_step_metrics = {}
 
-        for group_type, blocks in self._taro_groups:
-            R = self._rotations[group_type]
+        for group in self._taro_groups:
+            group_name = group.group_name
+            if group_name not in self._rotations:
+                continue
+            r = self._rotations[group_name]
 
-            # Phase 1: update momentum buffers for all params in this group
-            for block in blocks:
-                for param in block:
-                    if param.grad is None:
+            # Momentum-first update
+            for block in group.blocks:
+                for ref in block:
+                    grad = ref.param.grad
+                    if grad is None:
                         continue
-                    state = self.state[param]
-                    if len(state) == 0:
-                        state["momentum_buffer"] = torch.zeros_like(param.data)
-                    buf = state["momentum_buffer"]
-                    buf.mul_(mu).add_(param.grad, alpha=1.0 - mu)
+                    grad_canonical = self._to_canonical(grad, ref)
+                    buf = self._momentum_buffer(ref)
+                    if buf.shape != grad_canonical.shape:
+                        buf = torch.zeros_like(grad_canonical)
+                        self.state[ref.param]["momentum_buffer"] = buf
+                    buf.mul_(mu).add_(grad_canonical, alpha=1.0 - mu)
 
-            # Phase 2: process all blocks of this group type
-            # Collect complete blocks (all grads present)
-            complete_blocks: list[list[nn.Parameter]] = []
-            incomplete_blocks: list[list[nn.Parameter]] = []
-            for block in blocks:
-                if all(p.grad is not None for p in block):
-                    complete_blocks.append(block)
-                else:
-                    incomplete_blocks.append(block)
+            complete_blocks = [block for block in group.blocks if block and all(ref.param.grad is not None for ref in block)]
+            incomplete_blocks = [block for block in group.blocks if block and not all(ref.param.grad is not None for ref in block)]
 
-            if complete_blocks:
-                # Tensorize: stack momentums within each block, then batch across blocks
-                Z_list = []
-                for block in complete_blocks:
-                    momentums = [self.state[p]["momentum_buffer"] for p in block]
-                    Z_list.append(torch.cat(momentums, dim=1))  # (m, K*n)
+            orth_errs: list[float] = []
+            rot_update_norms: list[float] = []
+            effective_lrs: list[float] = []
 
-                Z_batch = torch.stack(Z_list)  # (B, m, K*n)
+            for block in complete_blocks:
+                z = torch.cat([self.state[ref.param]["momentum_buffer"] for ref in block], dim=1)
+                r_typed = r.to(dtype=z.dtype, device=z.device)
+                y = r_typed.mT @ z
+                s = sinkhorn(y.unsqueeze(0), n_iters).squeeze(0).to(dtype=z.dtype)
 
-                # Rotate: Y = R^T @ Z
-                R_float = R.to(dtype=Z_batch.dtype, device=Z_batch.device)
-                Y = R_float.mT @ Z_batch  # (B, m, K*n)
+                zst = z @ s.mT
+                r_new = cholqr(zst.float())
+                r_new_typed = r_new.to(dtype=z.dtype, device=z.device)
+                delta_z = r_new_typed @ s  # Use R_new for this step.
 
-                # Sinkhorn normalize
-                S = sinkhorn(Y, n_iters)  # (B, m, K*n) in bf16
+                r_old = r.to(dtype=r_new.dtype, device=r_new.device)
+                rot_update_norms.append(float((r_new - r_old).norm().item()))
+                eye = torch.eye(r_new.shape[-1], device=r_new.device, dtype=r_new.dtype)
+                orth_err = (r_new @ r_new.mT - eye).norm() / eye.norm()
+                orth_errs.append(float(orth_err.item()))
 
-                # Compute update: ΔZ = R_old @ S (consistent — S was computed with R_old)
-                S_float = S.to(dtype=Z_batch.dtype)
-                delta_Z = R_float @ S_float  # (B, m, K*n)
+                # Apply updates slice-by-slice
+                offset = 0
+                for ref in block:
+                    buf = self.state[ref.param]["momentum_buffer"]
+                    width = buf.shape[1]
+                    delta = delta_z[:, offset : offset + width]
+                    offset += width
 
-                # Update rotation for NEXT step: R_new = CholQR(mean(Z @ S^T))
-                ZST = Z_batch @ S_float.mT  # (B, m, m)
-                mean_ZST = ZST.mean(dim=0)  # (m, m)
-                R_new = cholqr(mean_ZST.float())
-                self._rotations[group_type] = R_new.to(dtype=R.dtype, device=R.device)
+                    m_dim, n_dim = delta.shape
+                    norm = delta.norm().clamp(min=1e-7)
+                    delta = delta * ((m_dim * n_dim) ** 0.5 / norm)
+                    delta_native = self._to_native(delta, ref)
 
-                # Split back and RMS normalize, then apply
-                for bi, block in enumerate(complete_blocks):
-                    n = block[0].shape[1]
-                    slices = delta_Z[bi].split(n, dim=1)
-                    for i, param in enumerate(block):
-                        m_dim, n_dim = param.shape
-                        delta_w = slices[i]
-                        # Normalize to polar_express magnitude, then scale like Muon
-                        norm = delta_w.norm().clamp(min=1e-7)
-                        delta_w = delta_w * (min(m_dim, n_dim) ** 0.5 / norm)
-                        scale = (m_dim / n_dim) ** 0.5
-                        if wd > 0:
-                            param.data.mul_(1.0 - lr * wd)
-                        param.data.add_(delta_w.to(param.dtype), alpha=-lr * scale)
-
-            # Fallback: process incomplete blocks per-param with Sinkhorn only
-            for block in incomplete_blocks:
-                for param in block:
-                    if param.grad is None:
-                        continue
-                    buf = self.state[param]["momentum_buffer"]
-                    s = sinkhorn(buf.unsqueeze(0), n_iters).squeeze(0)
-                    m_dim, n_dim = param.shape
-                    norm = s.norm().clamp(min=1e-7)
-                    delta_w = s * (min(m_dim, n_dim) ** 0.5 / norm)
-                    scale = (m_dim / n_dim) ** 0.5
+                    lr_eff = base_lr * ref.lr_mult
+                    effective_lrs.append(float(lr_eff))
                     if wd > 0:
-                        param.data.mul_(1.0 - lr * wd)
-                    param.data.add_(delta_w.to(param.dtype), alpha=-lr * scale)
+                        ref.param.data.mul_(1.0 - lr_eff * wd)
+                    ref.param.data.add_(delta_native.to(ref.param.dtype), alpha=-lr_eff)
+
+                r = r_new.to(dtype=self._rotations[group_name].dtype, device=self._rotations[group_name].device)
+
+            # Fallback path for partial gradient availability
+            for block in incomplete_blocks:
+                for ref in block:
+                    if ref.param.grad is None:
+                        continue
+                    buf = self.state[ref.param]["momentum_buffer"]
+                    r_typed = r.to(dtype=buf.dtype, device=buf.device)
+                    y = r_typed.mT @ buf
+                    s = sinkhorn(y.unsqueeze(0), n_iters).squeeze(0).to(dtype=buf.dtype)
+                    zst = buf @ s.mT
+                    r_new = cholqr(zst.float())
+                    r_new_typed = r_new.to(dtype=buf.dtype, device=buf.device)
+                    delta = r_new_typed @ s
+
+                    m_dim, n_dim = delta.shape
+                    norm = delta.norm().clamp(min=1e-7)
+                    delta = delta * ((m_dim * n_dim) ** 0.5 / norm)
+                    delta_native = self._to_native(delta, ref)
+
+                    lr_eff = base_lr * ref.lr_mult
+                    effective_lrs.append(float(lr_eff))
+                    if wd > 0:
+                        ref.param.data.mul_(1.0 - lr_eff * wd)
+                    ref.param.data.add_(delta_native.to(ref.param.dtype), alpha=-lr_eff)
+
+                    r_old = r.to(dtype=r_new.dtype, device=r_new.device)
+                    rot_update_norms.append(float((r_new - r_old).norm().item()))
+                    eye = torch.eye(r_new.shape[-1], device=r_new.device, dtype=r_new.dtype)
+                    orth_err = (r_new @ r_new.mT - eye).norm() / eye.norm()
+                    orth_errs.append(float(orth_err.item()))
+                    r = r_new.to(dtype=self._rotations[group_name].dtype, device=self._rotations[group_name].device)
+
+            self._rotations[group_name] = r
+            if orth_errs:
+                self._last_step_metrics[f"taro/{group_name}/orth_err"] = float(sum(orth_errs) / len(orth_errs))
+            if rot_update_norms:
+                self._last_step_metrics[f"taro/{group_name}/rotation_update_norm"] = float(sum(rot_update_norms) / len(rot_update_norms))
+            if effective_lrs:
+                self._last_step_metrics[f"taro/{group_name}/effective_lr"] = float(sum(effective_lrs) / len(effective_lrs))
 
         return loss
+
+    def get_step_metrics(self) -> dict[str, float]:
+        return dict(self._last_step_metrics)
 
     def state_dict(self):
         sd = super().state_dict()
@@ -203,6 +254,6 @@ class Taro(Optimizer):
     def load_state_dict(self, state_dict):
         rotations = state_dict.pop("taro_rotations", {})
         super().load_state_dict(state_dict)
-        for k, v in rotations.items():
-            if k in self._rotations:
-                self._rotations[k] = v.to(device=self._rotations[k].device)
+        for key, value in rotations.items():
+            if key in self._rotations:
+                self._rotations[key] = value.to(device=self._rotations[key].device)

@@ -22,8 +22,40 @@ def save_checkpoint(path: str, model: nn.Module, optimizer: torch.optim.Optimize
     torch.save(checkpoint, path)
 
 
+def _validate_model_compatibility(checkpoint: dict[str, Any], model: nn.Module) -> None:
+    ckpt_cfg = checkpoint.get("config", {})
+    if not isinstance(ckpt_cfg, dict):
+        return
+    ckpt_model_cfg = ckpt_cfg.get("model", {})
+    if not isinstance(ckpt_model_cfg, dict):
+        return
+
+    runtime_cfg = getattr(model, "config", None)
+    if runtime_cfg is None:
+        return
+
+    ckpt_norm_type = ckpt_model_cfg.get("norm_type")
+    runtime_norm_type = getattr(runtime_cfg, "norm_type", None)
+    if ckpt_norm_type is not None and runtime_norm_type is not None and ckpt_norm_type != runtime_norm_type:
+        raise ValueError(
+            "Checkpoint model.norm_type mismatch: "
+            f"checkpoint={ckpt_norm_type}, runtime={runtime_norm_type}. "
+            "Use a checkpoint created with the same model.norm_type."
+        )
+
+    ckpt_tie = ckpt_model_cfg.get("tie_embeddings")
+    runtime_tie = getattr(runtime_cfg, "tie_embeddings", None)
+    if ckpt_tie is not None and runtime_tie is not None and ckpt_tie != runtime_tie:
+        raise ValueError(
+            "Checkpoint model.tie_embeddings mismatch: "
+            f"checkpoint={ckpt_tie}, runtime={runtime_tie}. "
+            "Use a checkpoint created with the same model.tie_embeddings setting."
+        )
+
+
 def load_checkpoint(path: str, model: nn.Module, optimizer: torch.optim.Optimizer | list[torch.optim.Optimizer] | None = None) -> dict:
     checkpoint = torch.load(path, weights_only=False)
+    _validate_model_compatibility(checkpoint, model)
     model.load_state_dict(checkpoint["model_state_dict"])
     if optimizer is not None and "optimizer_state_dict" in checkpoint:
         saved_state = checkpoint["optimizer_state_dict"]

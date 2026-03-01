@@ -66,13 +66,18 @@ class Trainer:
 
         self.model: GPT = GPT(config.model).to(self.device)
 
+        first_opt_max_lr = config.train.muon_lr
+        if config.train.optimizer == "taro":
+            # TARO uses RMS-normalized updates; paper-style LR is a multiplier of AdamW LR.
+            first_opt_max_lr = config.train.learning_rate * config.train.muon_lr
+
         # Fused AdamW can be numerically brittle in some bf16 stacks; keep it for fp16 path only.
         use_fused_adamw = self.device.type == "cuda" and config.train.precision == "fp16"
         self.optimizers = configure_optimizers(
             self.model,
             lr=config.train.learning_rate,
             weight_decay=config.train.weight_decay,
-            muon_lr=config.train.muon_lr,
+            muon_lr=first_opt_max_lr,
             muon_momentum=config.train.muon_momentum,
             ns_steps=config.train.ns_steps,
             fused=use_fused_adamw,
@@ -90,9 +95,9 @@ class Trainer:
             max_lr=config.train.learning_rate, min_lr=min_lr,
             warmup_steps=scheduler_warmup_steps, max_steps=self.train_max_steps,
         )
-        muon_min_lr = config.train.muon_lr / 10
+        muon_min_lr = first_opt_max_lr / 10
         self.muon_scheduler = CosineScheduler(
-            max_lr=config.train.muon_lr, min_lr=muon_min_lr,
+            max_lr=first_opt_max_lr, min_lr=muon_min_lr,
             warmup_steps=scheduler_warmup_steps, max_steps=self.train_max_steps,
         )
 

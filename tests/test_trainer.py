@@ -135,3 +135,14 @@ class TestTrainer:
         history = trainer.train()
         assert len(history) == 5
         assert all(not np.isnan(h["train_loss"]) for h in history)
+
+    def test_taro_uses_lr_multiplier_on_first_optimizer(self, tmp_path):
+        cfg = self._make_config(tmp_path)
+        cfg.train.optimizer = "taro"
+        cfg.train.learning_rate = 3e-4
+        cfg.train.muon_lr = 0.02
+        ckpt_dir = str(tmp_path / "checkpoints")
+
+        trainer = Trainer(cfg, checkpoint_dir=ckpt_dir)
+        first_lr = trainer.optimizers[0].param_groups[0]["lr"]
+        assert first_lr == pytest.approx(6e-6)

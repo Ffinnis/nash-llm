@@ -171,9 +171,9 @@ class Taro(Optimizer):
                     for i, param in enumerate(block):
                         m_dim, n_dim = param.shape
                         delta_w = slices[i]
-                        # RMS normalization: scale to sqrt(m*n) / ||delta_w||_F
+                        # Scale to match Muon's ortho convention: sqrt(m/n) * sqrt(min(m,n))
                         norm = delta_w.norm().clamp(min=1e-7)
-                        delta_w = delta_w * ((m_dim * n_dim) ** 0.5 / norm)
+                        delta_w = delta_w * ((m_dim * min(m_dim, n_dim) / n_dim) ** 0.5 / norm)
                         if wd > 0:
                             param.data.mul_(1.0 - lr * wd)
                         param.data.add_(delta_w.to(param.dtype), alpha=-lr)
@@ -187,7 +187,7 @@ class Taro(Optimizer):
                     s = sinkhorn(buf.unsqueeze(0), n_iters).squeeze(0)
                     m_dim, n_dim = param.shape
                     norm = s.norm().clamp(min=1e-7)
-                    delta_w = s * ((m_dim * n_dim) ** 0.5 / norm)
+                    delta_w = s * ((m_dim * min(m_dim, n_dim) / n_dim) ** 0.5 / norm)
                     if wd > 0:
                         param.data.mul_(1.0 - lr * wd)
                     param.data.add_(delta_w.to(param.dtype), alpha=-lr)

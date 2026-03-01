@@ -83,3 +83,29 @@ class TestCheckpoint:
 
         with pytest.raises(ValueError, match="single optimizer state"):
             load_checkpoint(path, model2, optimizers)
+
+    def test_load_legacy_layernorm_checkpoint_raises(self, tmp_path):
+        """Legacy LayerNorm checkpoints are intentionally incompatible with RMSNorm models."""
+        path = str(tmp_path / "legacy_ln_ckpt.pt")
+        legacy_state = self.model.state_dict()
+
+        # Simulate old LayerNorm checkpoints that had bias tensors for ln1/ln2/ln_f.
+        for layer_idx in range(self.cfg.n_layers):
+            legacy_state[f"blocks.{layer_idx}.ln1.bias"] = torch.zeros(self.cfg.d_model)
+            legacy_state[f"blocks.{layer_idx}.ln2.bias"] = torch.zeros(self.cfg.d_model)
+        legacy_state["ln_f.bias"] = torch.zeros(self.cfg.d_model)
+
+        torch.save(
+            {
+                "step": 0,
+                "model_state_dict": legacy_state,
+                "optimizer_state_dict": {},
+                "config": {},
+                "metrics": {},
+            },
+            path,
+        )
+
+        model2 = GPT(self.cfg)
+        with pytest.raises(RuntimeError, match="Unexpected key\\(s\\) in state_dict"):
+            load_checkpoint(path, model2)

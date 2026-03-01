@@ -62,7 +62,7 @@ uv run python scripts/compare_runs.py --run_ids <id1> <id2>
 
 ### Model
 
-Decoder-only GPT with pre-LayerNorm, GELU activation, and weight tying (`lm_head.weight = token_emb.weight`). The 100M config is 12 layers, 12 heads, 768 d_model (124M params). The causal mask is registered as a buffer in `MultiHeadAttention`.
+Decoder-only GPT with pre-RMSNorm, GELU activation, and weight tying (`lm_head.weight = token_emb.weight`). The 100M config is 12 layers, 12 heads, 768 d_model (124M params). The causal mask is registered as a buffer in `MultiHeadAttention`.
 
 `GPT.forward(idx, targets)` returns logits when targets is None, or `(logits, loss)` when targets are provided.
 
@@ -74,7 +74,7 @@ Decoder-only GPT with pre-LayerNorm, GELU activation, and weight tying (`lm_head
 
 `Trainer` orchestrates the loop: AMP autocast (`bf16`/`fp16`), gradient accumulation (`grad_accum_steps`), cosine LR schedule with linear warmup, gradient clipping, periodic eval (val_loss, accuracy, perplexity), checkpointing, and wandb logging.
 
-`configure_optimizers()` creates a [Muon, AdamW] optimizer pair using TEON: cross-layer Q/K/V stacking (K=2) + per-layer MUON (out_proj, MLP) + AdamW (embeddings, LN, biases). Polar Express (Amsel et al., 2025) orthogonalization with pre-computed degree-5 coefficients. Attention uses separate `q_proj`, `k_proj`, `v_proj` projections. Config fields: `muon_lr` (default 0.02), `muon_momentum` (0.95), `ns_steps` (5).
+`configure_optimizers()` creates a [Muon, AdamW] optimizer pair using TEON: cross-layer Q/K/V stacking (K=2) + per-layer MUON (out_proj, MLP) + AdamW (embeddings, normalization params, biases). Polar Express (Amsel et al., 2025) orthogonalization with pre-computed degree-5 coefficients. Attention uses separate `q_proj`, `k_proj`, `v_proj` projections. Config fields: `muon_lr` (default 0.02), `muon_momentum` (0.95), `ns_steps` (5).
 
 ### Rules
 

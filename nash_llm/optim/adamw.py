@@ -19,7 +19,7 @@ def configure_optimizers(
 
     Returns [Muon, AdamW]:
     - Muon: TEON cross-layer Q/K/V stacking (K=2) + per-layer ortho for out_proj, MLP
-    - AdamW: embeddings, layer norms, biases, and remaining params
+    - AdamW: embeddings, normalization params, biases, and remaining params
     """
     muon_params: list[nn.Parameter] = []  # per-layer ortho (out_proj, MLP)
     teon_groups: list[list[nn.Parameter]] = []  # cross-layer stacking (Q/K/V)

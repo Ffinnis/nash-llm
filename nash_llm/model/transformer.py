@@ -4,13 +4,19 @@ from nash_llm.config import ModelConfig
 from nash_llm.model.attention import MultiHeadAttention
 from nash_llm.model.layers import FeedForward
 
+if not hasattr(nn, "RMSNorm"):
+    raise RuntimeError(
+        "torch.nn.RMSNorm is required for this project. "
+        "Please install a PyTorch version that provides nn.RMSNorm."
+    )
+
 
 class TransformerBlock(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
-        self.ln1 = nn.LayerNorm(config.d_model)
+        self.ln1 = nn.RMSNorm(config.d_model, eps=1e-5)
         self.attn = MultiHeadAttention(config)
-        self.ln2 = nn.LayerNorm(config.d_model)
+        self.ln2 = nn.RMSNorm(config.d_model, eps=1e-5)
         self.ff = FeedForward(config)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -31,7 +37,7 @@ class GPT(nn.Module):
         self.blocks = nn.ModuleList([
             TransformerBlock(config) for _ in range(config.n_layers)
         ])
-        self.ln_f = nn.LayerNorm(config.d_model)
+        self.ln_f = nn.RMSNorm(config.d_model, eps=1e-5)
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         self.lm_head.weight = self.token_emb.weight

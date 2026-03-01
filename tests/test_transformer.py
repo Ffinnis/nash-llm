@@ -16,6 +16,12 @@ class TestGPT:
         logits = self.model(x)
         assert logits.shape == (2, 16, 100)
 
+    def test_uses_rmsnorm_everywhere(self):
+        assert isinstance(self.model.ln_f, torch.nn.RMSNorm)
+        for block in self.model.blocks:
+            assert isinstance(block.ln1, torch.nn.RMSNorm)
+            assert isinstance(block.ln2, torch.nn.RMSNorm)
+
     def test_loss_computation(self):
         x = torch.randint(0, 100, (2, 16))
         targets = torch.randint(0, 100, (2, 16))

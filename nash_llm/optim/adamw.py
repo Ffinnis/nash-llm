@@ -152,12 +152,13 @@ def _configure_taro_optimizers(
 
         taro_groups.append((group_type, blocks))
 
+    # Sinkhorn is O(mn) per iter vs Polar Express O(m²n) — use more iterations
     taro_opt = Taro(
         taro_groups=taro_groups,
         lr=muon_lr,
         momentum=muon_momentum,
         weight_decay=weight_decay,
-        sinkhorn_iters=ns_steps,
+        sinkhorn_iters=ns_steps * 5,
     )
 
     return [taro_opt] + _build_adamw(adamw_decay, adamw_no_decay, lr, weight_decay, betas, fused)

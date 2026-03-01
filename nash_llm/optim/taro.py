@@ -153,16 +153,15 @@ class Taro(Optimizer):
                 # Sinkhorn normalize
                 S = sinkhorn(Y, n_iters)  # (B, m, K*n) in bf16
 
-                # Update rotation: R = CholQR(mean(Z @ S^T))
+                # Compute update: ΔZ = R_old @ S (consistent — S was computed with R_old)
                 S_float = S.to(dtype=Z_batch.dtype)
+                delta_Z = R_float @ S_float  # (B, m, K*n)
+
+                # Update rotation for NEXT step: R_new = CholQR(mean(Z @ S^T))
                 ZST = Z_batch @ S_float.mT  # (B, m, m)
                 mean_ZST = ZST.mean(dim=0)  # (m, m)
                 R_new = cholqr(mean_ZST.float())
                 self._rotations[group_type] = R_new.to(dtype=R.dtype, device=R.device)
-                R_float = R_new.to(dtype=Z_batch.dtype, device=Z_batch.device)
-
-                # Compute update: ΔZ = R @ S
-                delta_Z = R_float @ S_float  # (B, m, K*n)
 
                 # Split back and RMS normalize, then apply
                 for bi, block in enumerate(complete_blocks):

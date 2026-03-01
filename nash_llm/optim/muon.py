@@ -227,15 +227,16 @@ class Muon(Optimizer):
                     Z_list.append(torch.cat(momentums, dim=1))
                 Z_batch = torch.stack(Z_list)
                 Q_batch = orthogonalize(Z_batch, ns_steps)
-                if self._norm_dir != "none":
-                    Q_batch = _norm_dir(Q_batch, self._norm_dir)
                 scale = (m / n) ** 0.5
                 for gi, group in enumerate(complete):
                     ortho_slices = Q_batch[gi].split(n, dim=1)
                     for i, param in enumerate(group):
+                        o = ortho_slices[i]
+                        if self._norm_dir != "none":
+                            o = _norm_dir(o, self._norm_dir)
                         if wd > 0:
                             param.data.mul_(1.0 - lr * wd)
-                        param.data.add_(ortho_slices[i], alpha=-lr * scale)
+                        param.data.add_(o, alpha=-lr * scale)
 
             # Fallback: per-param MUON for incomplete groups
             for group in incomplete:

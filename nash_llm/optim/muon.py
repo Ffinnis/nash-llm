@@ -67,6 +67,24 @@ def orthogonalize(M: torch.Tensor, steps: int = 5) -> torch.Tensor:
     return polar_express(M, steps)
 
 
+def _norm_dir(X: torch.Tensor, d: str, eps: float = 1e-8) -> torch.Tensor:
+    """L2 normalization along rows, columns, or both (Muon+).
+
+    Args:
+        X: tensor of shape (..., m, n)
+        d: "col", "row", "col_row", or "row_col"
+    """
+    if d == "col":
+        return X / (X.square().sum(dim=-2, keepdim=True).sqrt() + eps)
+    if d == "row":
+        return X / (X.square().sum(dim=-1, keepdim=True).sqrt() + eps)
+    if d == "col_row":
+        return _norm_dir(_norm_dir(X, "col", eps), "row", eps)
+    if d == "row_col":
+        return _norm_dir(_norm_dir(X, "row", eps), "col", eps)
+    raise ValueError(f"Unknown norm direction: {d}")
+
+
 class Muon(Optimizer):
     """MUON/TEON optimizer with Polar Express orthogonalization.
 
@@ -94,6 +112,7 @@ class Muon(Optimizer):
         momentum: float = 0.95,
         weight_decay: float = 0.0,
         ns_steps: int = 5,
+        norm_dir: str = "none",
     ):
         # Flatten all params for Optimizer registration
         all_params: list[nn.Parameter] = []
@@ -111,6 +130,7 @@ class Muon(Optimizer):
 
         self._muon_params = muon_params
         self._teon_groups = teon_params
+        self._norm_dir = norm_dir
 
         # Pre-group MUON params by shape for batched orthogonalization
         self._muon_shape_groups: dict[tuple[int, int], list[nn.Parameter]] = {}
@@ -157,6 +177,8 @@ class Muon(Optimizer):
                 # Fast path: all grads present → fixed batch size
                 bufs = torch.stack([self.state[p]["momentum_buffer"] for p in params])
                 ortho = orthogonalize(bufs, ns_steps)
+                if self._norm_dir != "none":
+                    ortho = _norm_dir(ortho, self._norm_dir)
                 scale = (m / n) ** 0.5
                 for i, p in enumerate(params):
                     if wd > 0:
@@ -169,6 +191,8 @@ class Muon(Optimizer):
                         continue
                     buf = self.state[p]["momentum_buffer"]
                     o = orthogonalize(buf, ns_steps)
+                    if self._norm_dir != "none":
+                        o = _norm_dir(o, self._norm_dir)
                     if wd > 0:
                         p.data.mul_(1.0 - lr * wd)
                     p.data.add_(o, alpha=-lr * (m / n) ** 0.5)
@@ -203,6 +227,8 @@ class Muon(Optimizer):
                     Z_list.append(torch.cat(momentums, dim=1))
                 Z_batch = torch.stack(Z_list)
                 Q_batch = orthogonalize(Z_batch, ns_steps)
+                if self._norm_dir != "none":
+                    Q_batch = _norm_dir(Q_batch, self._norm_dir)
                 scale = (m / n) ** 0.5
                 for gi, group in enumerate(complete):
                     ortho_slices = Q_batch[gi].split(n, dim=1)
@@ -218,6 +244,8 @@ class Muon(Optimizer):
                         continue
                     buf = self.state[param]["momentum_buffer"]
                     o = orthogonalize(buf, ns_steps)
+                    if self._norm_dir != "none":
+                        o = _norm_dir(o, self._norm_dir)
                     if wd > 0:
                         param.data.mul_(1.0 - lr * wd)
                     param.data.add_(o, alpha=-lr * (m / n) ** 0.5)

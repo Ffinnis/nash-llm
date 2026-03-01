@@ -12,6 +12,7 @@ def configure_optimizers(
     muon_lr: float = 0.02,
     muon_momentum: float = 0.95,
     ns_steps: int = 5,
+    norm_dir: str = "none",
     betas: tuple[float, float] = (0.9, 0.95),
     fused: bool | None = None,
 ) -> list[torch.optim.Optimizer]:
@@ -78,6 +79,7 @@ def configure_optimizers(
         momentum=muon_momentum,
         weight_decay=weight_decay,
         ns_steps=ns_steps,
+        norm_dir=norm_dir,
     )
 
     # Build AdamW for remaining params

@@ -30,6 +30,7 @@ class TrainConfig:
     muon_lr: float = 0.02
     muon_momentum: float = 0.95
     ns_steps: int = 5
+    optimizer: str = "muon"  # "muon" or "taro"
 
 
 @dataclass

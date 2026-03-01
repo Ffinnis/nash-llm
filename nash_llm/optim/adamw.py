@@ -5,22 +5,17 @@ import inspect
 from nash_llm.optim.muon import Muon
 
 
-def configure_optimizers(
+def _configure_muon_optimizers(
     model: nn.Module,
     lr: float,
     weight_decay: float,
-    muon_lr: float = 0.02,
-    muon_momentum: float = 0.95,
-    ns_steps: int = 5,
-    betas: tuple[float, float] = (0.9, 0.95),
-    fused: bool | None = None,
+    muon_lr: float,
+    muon_momentum: float,
+    ns_steps: int,
+    betas: tuple[float, float],
+    fused: bool | None,
 ) -> list[torch.optim.Optimizer]:
-    """Create TEON+AdamW optimizer pair.
-
-    Returns [Muon, AdamW]:
-    - Muon: TEON cross-layer Q/K/V stacking (K=2) + per-layer ortho for out_proj, MLP
-    - AdamW: embeddings, layer norms, biases, and remaining params
-    """
+    """Create TEON+AdamW optimizer pair (original path)."""
     muon_params: list[nn.Parameter] = []  # per-layer ortho (out_proj, MLP)
     teon_groups: list[list[nn.Parameter]] = []  # cross-layer stacking (Q/K/V)
     adamw_decay: list[nn.Parameter] = []
@@ -80,12 +75,136 @@ def configure_optimizers(
         ns_steps=ns_steps,
     )
 
-    # Build AdamW for remaining params
+    return [muon_opt] + _build_adamw(adamw_decay, adamw_no_decay, lr, weight_decay, betas, fused)
+
+
+def _configure_taro_optimizers(
+    model: nn.Module,
+    lr: float,
+    weight_decay: float,
+    muon_lr: float,
+    muon_momentum: float,
+    ns_steps: int,
+    betas: tuple[float, float],
+    fused: bool | None,
+) -> list[torch.optim.Optimizer]:
+    """Create TARO+AdamW optimizer pair.
+
+    TARO groups all 2D matrix weights by symmetry type:
+    - QKV: Q+K+V stacked together, K=2 layers per block (6 params each)
+    - O: out_proj, K=2 layers per block
+    - UP: fc1, K=2 layers per block
+    - DOWN: fc2, K=2 layers per block
+    AdamW handles embeddings, norms, biases.
+    """
+    from nash_llm.optim.taro import Taro
+
+    taro_param_ids: set[int] = set()
+    adamw_decay: list[nn.Parameter] = []
+    adamw_no_decay: list[nn.Parameter] = []
+
+    # Collect params by type
+    qkv_patterns = ("q_proj.weight", "k_proj.weight", "v_proj.weight")
+    group_patterns: dict[str, tuple[str, ...]] = {
+        "qkv": qkv_patterns,
+        "o": ("out_proj.weight",),
+        "up": ("fc1.weight",),
+        "down": ("fc2.weight",),
+    }
+
+    # Gather params by group type
+    params_by_type: dict[str, list[nn.Parameter]] = {k: [] for k in group_patterns}
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        matched = False
+        for group_type, patterns in group_patterns.items():
+            for pattern in patterns:
+                if pattern in name:
+                    params_by_type[group_type].append(param)
+                    taro_param_ids.add(id(param))
+                    matched = True
+                    break
+            if matched:
+                break
+        if not matched:
+            if param.ndim < 2:
+                adamw_no_decay.append(param)
+            else:
+                adamw_decay.append(param)
+
+    # Build TARO groups with K=2 cross-layer stacking
+    K = 2
+    taro_groups: list[tuple[str, list[list[nn.Parameter]]]] = []
+
+    for group_type in ("qkv", "o", "up", "down"):
+        params = params_by_type[group_type]
+        if not params:
+            continue
+
+        blocks: list[list[nn.Parameter]] = []
+        if group_type == "qkv":
+            # QKV: interleave Q, K, V from same layers into blocks of 6
+            # params_by_type["qkv"] has all Q, K, V in model.named_parameters() order
+            # We need to group by layer: [Q0, K0, V0, Q1, K1, V1, ...]
+            # params are already in model order (Q0, K0, V0, Q1, K1, V1, ...)
+            # Each layer contributes 3 params, so a K=2 block = 6 params
+            params_per_layer = 3  # Q, K, V
+            n_layers = len(params) // params_per_layer
+            num_groups = n_layers // K
+            for i in range(num_groups):
+                # Layers i*K to (i+1)*K-1, each contributing Q, K, V
+                block = []
+                for layer_idx in range(i * K, (i + 1) * K):
+                    block.extend(params[layer_idx * params_per_layer : (layer_idx + 1) * params_per_layer])
+                blocks.append(block)
+            # Remainder layers
+            remainder_start = num_groups * K
+            if remainder_start < n_layers:
+                block = []
+                for layer_idx in range(remainder_start, n_layers):
+                    block.extend(params[layer_idx * params_per_layer : (layer_idx + 1) * params_per_layer])
+                blocks.append(block)
+        else:
+            # O, UP, DOWN: simple K=2 stacking
+            num_groups = len(params) // K
+            for i in range(num_groups):
+                blocks.append(params[i * K : (i + 1) * K])
+            remainder_start = num_groups * K
+            if remainder_start < len(params):
+                blocks.append(params[remainder_start:])
+
+        taro_groups.append((group_type, blocks))
+
+    taro_opt = Taro(
+        taro_groups=taro_groups,
+        lr=muon_lr,
+        momentum=muon_momentum,
+        weight_decay=weight_decay,
+        sinkhorn_iters=ns_steps,
+    )
+
+    return [taro_opt] + _build_adamw(adamw_decay, adamw_no_decay, lr, weight_decay, betas, fused)
+
+
+def _build_adamw(
+    adamw_decay: list[nn.Parameter],
+    adamw_no_decay: list[nn.Parameter],
+    lr: float,
+    weight_decay: float,
+    betas: tuple[float, float],
+    fused: bool | None,
+) -> list[torch.optim.Optimizer]:
+    """Build AdamW optimizer for remaining params."""
     adamw_groups = []
     if adamw_decay:
         adamw_groups.append({"params": adamw_decay, "weight_decay": weight_decay})
     if adamw_no_decay:
         adamw_groups.append({"params": adamw_no_decay, "weight_decay": 0.0})
+
+    if not adamw_groups:
+        return []
 
     adamw_kwargs: dict = {"lr": lr, "betas": betas}
     can_use_fused = torch.cuda.is_available() and "fused" in inspect.signature(torch.optim.AdamW).parameters
@@ -97,6 +216,31 @@ def configure_optimizers(
             raise ValueError("Fused AdamW requested but not supported in this runtime")
         adamw_kwargs["fused"] = True
 
-    adamw_opt = torch.optim.AdamW(adamw_groups, **adamw_kwargs)
+    return [torch.optim.AdamW(adamw_groups, **adamw_kwargs)]
 
-    return [muon_opt, adamw_opt]
+
+def configure_optimizers(
+    model: nn.Module,
+    lr: float,
+    weight_decay: float,
+    muon_lr: float = 0.02,
+    muon_momentum: float = 0.95,
+    ns_steps: int = 5,
+    betas: tuple[float, float] = (0.9, 0.95),
+    fused: bool | None = None,
+    optimizer: str = "muon",
+) -> list[torch.optim.Optimizer]:
+    """Create optimizer pair.
+
+    Returns [Muon/Taro, AdamW]:
+    - optimizer="muon": TEON cross-layer Q/K/V stacking + per-layer ortho for out_proj, MLP
+    - optimizer="taro": TARO adaptive rotation for all 2D weights by symmetry group
+    - AdamW: embeddings, layer norms, biases, and remaining params
+    """
+    if optimizer == "taro":
+        return _configure_taro_optimizers(
+            model, lr, weight_decay, muon_lr, muon_momentum, ns_steps, betas, fused,
+        )
+    return _configure_muon_optimizers(
+        model, lr, weight_decay, muon_lr, muon_momentum, ns_steps, betas, fused,
+    )

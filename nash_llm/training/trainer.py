@@ -76,6 +76,7 @@ class Trainer:
             muon_momentum=config.train.muon_momentum,
             ns_steps=config.train.ns_steps,
             fused=use_fused_adamw,
+            optimizer=config.train.optimizer,
         )
         # Keep self.optimizer pointing to the first optimizer for backward compat
         self.optimizer = self.optimizers[0]

@@ -231,12 +231,9 @@ class Muon(Optimizer):
                 for gi, group in enumerate(complete):
                     ortho_slices = Q_batch[gi].split(n, dim=1)
                     for i, param in enumerate(group):
-                        o = ortho_slices[i]
-                        if self._norm_dir != "none":
-                            o = _norm_dir(o, self._norm_dir)
                         if wd > 0:
                             param.data.mul_(1.0 - lr * wd)
-                        param.data.add_(o, alpha=-lr * scale)
+                        param.data.add_(ortho_slices[i], alpha=-lr * scale)
 
             # Fallback: per-param MUON for incomplete groups
             for group in incomplete:
@@ -245,8 +242,6 @@ class Muon(Optimizer):
                         continue
                     buf = self.state[param]["momentum_buffer"]
                     o = orthogonalize(buf, ns_steps)
-                    if self._norm_dir != "none":
-                        o = _norm_dir(o, self._norm_dir)
                     if wd > 0:
                         param.data.mul_(1.0 - lr * wd)
                     param.data.add_(o, alpha=-lr * (m / n) ** 0.5)

@@ -31,7 +31,9 @@ class GPT(nn.Module):
         self.config = config
 
         self.token_emb = nn.Embedding(config.vocab_size, config.d_model)
-        self.pos_emb = nn.Embedding(config.max_seq_len, config.d_model)
+        self.pos_emb = None
+        if config.position_embedding == "learned":
+            self.pos_emb = nn.Embedding(config.max_seq_len, config.d_model)
         self.drop = nn.Dropout(config.dropout)
 
         self.blocks = nn.ModuleList([
@@ -57,9 +59,11 @@ class GPT(nn.Module):
         assert T <= self.config.max_seq_len, f"Sequence length {T} exceeds max {self.config.max_seq_len}"
 
         tok_emb = self.token_emb(idx)
-        pos = torch.arange(T, device=idx.device)
-        pos_emb = self.pos_emb(pos)
-        x = self.drop(tok_emb + pos_emb)
+        x = tok_emb
+        if self.pos_emb is not None:
+            pos = torch.arange(T, device=idx.device)
+            x = x + self.pos_emb(pos)
+        x = self.drop(x)
 
         for block in self.blocks:
             x = block(x)

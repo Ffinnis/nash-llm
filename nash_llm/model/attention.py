@@ -15,6 +15,7 @@ class MultiHeadAttention(nn.Module):
 
         self.n_heads = config.n_heads
         self.head_dim = config.d_model // config.n_heads
+        self.position_embedding = config.position_embedding
 
         self.q_proj = nn.Linear(config.d_model, config.d_model)
         self.k_proj = nn.Linear(config.d_model, config.d_model)
@@ -27,6 +28,39 @@ class MultiHeadAttention(nn.Module):
         mask = torch.tril(torch.ones(config.max_seq_len, config.max_seq_len))
         self.register_buffer("mask", mask.view(1, 1, config.max_seq_len, config.max_seq_len))
 
+        if self.position_embedding == "rope":
+            if self.head_dim % 2 != 0:
+                raise ValueError(
+                    f"RoPE requires an even head_dim, got {self.head_dim} from "
+                    f"d_model={config.d_model}, n_heads={config.n_heads}"
+                )
+            inv_freq = 1.0 / (
+                config.rope_base
+                ** (torch.arange(0, self.head_dim, 2, dtype=torch.float32) / self.head_dim)
+            )
+            positions = torch.arange(config.max_seq_len, dtype=torch.float32)
+            freqs = torch.outer(positions, inv_freq)
+            self.register_buffer("rope_cos", torch.cos(freqs), persistent=False)
+            self.register_buffer("rope_sin", torch.sin(freqs), persistent=False)
+
+    def _apply_rope(self, x: torch.Tensor, seq_len: int) -> torch.Tensor:
+        if seq_len > self.rope_cos.size(0):
+            raise ValueError(f"Sequence length {seq_len} exceeds RoPE cache size {self.rope_cos.size(0)}")
+
+        cos = self.rope_cos[:seq_len].to(device=x.device, dtype=x.dtype).view(1, 1, seq_len, -1)
+        sin = self.rope_sin[:seq_len].to(device=x.device, dtype=x.dtype).view(1, 1, seq_len, -1)
+
+        x_even = x[..., ::2]
+        x_odd = x[..., 1::2]
+        x_rotated = torch.stack(
+            (
+                x_even * cos - x_odd * sin,
+                x_even * sin + x_odd * cos,
+            ),
+            dim=-1,
+        )
+        return x_rotated.flatten(-2)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, C = x.shape
 
@@ -37,6 +71,10 @@ class MultiHeadAttention(nn.Module):
         q = q.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
         k = k.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+
+        if self.position_embedding == "rope":
+            q = self._apply_rope(q, T)
+            k = self._apply_rope(k, T)
 
         if hasattr(F, "scaled_dot_product_attention"):
             out = F.scaled_dot_product_attention(

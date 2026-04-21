@@ -33,6 +33,17 @@ class TestGPT:
     def test_weight_tying(self):
         assert self.model.token_emb.weight is self.model.lm_head.weight
 
+    def test_default_uses_rope_without_learned_position_table(self):
+        assert self.model.pos_emb is None
+
+    def test_learned_position_embedding_mode(self):
+        model = GPT(ModelConfig(
+            n_layers=2, n_heads=4, d_model=64, d_ff=256,
+            vocab_size=100, max_seq_len=32, dropout=0.0,
+            position_embedding="learned",
+        ))
+        assert model.pos_emb is not None
+
     def test_parameter_count_small(self):
         total = sum(p.numel() for p in self.model.parameters())
         assert total > 0

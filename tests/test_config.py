@@ -13,12 +13,19 @@ class TestModelConfig:
         assert cfg.vocab_size == 50257
         assert cfg.max_seq_len == 1024
         assert cfg.dropout == 0.1
+        assert cfg.position_embedding == "rope"
+        assert cfg.rope_base == 10_000.0
 
     def test_custom_values(self):
-        cfg = ModelConfig(n_layers=6, d_model=512)
+        cfg = ModelConfig(n_layers=6, d_model=512, position_embedding="learned")
         assert cfg.n_layers == 6
         assert cfg.d_model == 512
         assert cfg.n_heads == 12
+        assert cfg.position_embedding == "learned"
+
+    def test_invalid_position_embedding_rejected_on_init(self):
+        with pytest.raises(ValueError, match="Unsupported model.position_embedding"):
+            ModelConfig(position_embedding="sinusoidal")
 
 
 class TestTrainConfig:
@@ -76,7 +83,7 @@ class TestNashConfig:
 class TestLoadConfig:
     def test_load_from_yaml(self, tmp_path):
         yaml_content = {
-            "model": {"n_layers": 6, "d_model": 512},
+            "model": {"n_layers": 6, "d_model": 512, "position_embedding": "learned"},
             "train": {"learning_rate": 1e-4, "precision": "fp16"},
         }
         yaml_path = tmp_path / "test.yaml"
@@ -85,6 +92,7 @@ class TestLoadConfig:
         cfg = load_config(str(yaml_path))
         assert cfg.model.n_layers == 6
         assert cfg.model.d_model == 512
+        assert cfg.model.position_embedding == "learned"
         assert cfg.train.learning_rate == 1e-4
         assert cfg.train.precision == "fp16"
         assert cfg.model.n_heads == 12
@@ -102,11 +110,17 @@ class TestLoadConfig:
         assert cfg.train.precision == "fp16"
 
     def test_cli_overrides_without_yaml(self):
-        overrides = {"model.n_layers": "6", "train.batch_size": "32", "precision": "fp16"}
+        overrides = {
+            "model.n_layers": "6",
+            "train.batch_size": "32",
+            "precision": "fp16",
+            "position_embedding": "learned",
+        }
         cfg = load_config(config_path=None, overrides=overrides)
         assert cfg.model.n_layers == 6
         assert cfg.train.batch_size == 32
         assert cfg.train.precision == "fp16"
+        assert cfg.model.position_embedding == "learned"
 
     def test_invalid_precision_override_raises(self):
         with pytest.raises(ValueError, match="Unsupported train.precision"):
@@ -117,6 +131,17 @@ class TestLoadConfig:
         yaml_path = tmp_path / "test.yaml"
         yaml_path.write_text(yaml.dump(yaml_content))
         with pytest.raises(ValueError, match="Unsupported train.precision"):
+            load_config(str(yaml_path))
+
+    def test_invalid_position_embedding_override_raises(self):
+        with pytest.raises(ValueError, match="Unsupported model.position_embedding"):
+            load_config(config_path=None, overrides={"position_embedding": "sinusoidal"})
+
+    def test_invalid_position_embedding_yaml_raises(self, tmp_path):
+        yaml_content = {"model": {"position_embedding": "sinusoidal"}}
+        yaml_path = tmp_path / "test.yaml"
+        yaml_path.write_text(yaml.dump(yaml_content))
+        with pytest.raises(ValueError, match="Unsupported model.position_embedding"):
             load_config(str(yaml_path))
 
     def test_muon_lr_yaml(self, tmp_path):

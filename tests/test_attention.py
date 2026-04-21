@@ -31,3 +31,18 @@ class TestMultiHeadAttention:
         bad_cfg = ModelConfig(d_model=65, n_heads=4)
         with pytest.raises(ValueError):
             MultiHeadAttention(bad_cfg)
+
+    def test_rope_buffers_created_by_default(self):
+        assert self.attn.position_embedding == "rope"
+        assert self.attn.rope_cos.shape == (32, 8)
+        assert self.attn.rope_sin.shape == (32, 8)
+
+    def test_rope_requires_even_head_dim(self):
+        bad_cfg = ModelConfig(d_model=60, n_heads=4, position_embedding="rope")
+        with pytest.raises(ValueError, match="even head_dim"):
+            MultiHeadAttention(bad_cfg)
+
+    def test_learned_position_embedding_skips_rope_buffers(self):
+        attn = MultiHeadAttention(ModelConfig(d_model=64, n_heads=4, max_seq_len=32, position_embedding="learned"))
+        assert not hasattr(attn, "rope_cos")
+        assert not hasattr(attn, "rope_sin")

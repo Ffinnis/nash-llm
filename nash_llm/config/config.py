@@ -45,6 +45,8 @@ class MetricsConfig:
     wandb_project: str = "nash-llm"
     wandb_enabled: bool = True
     log_interval: int = 10
+    eval_max_batches: int = 20
+    final_eval_max_batches: int = 0
     metrics: list[str] = field(default_factory=lambda: ["val_loss", "accuracy"])
 
 

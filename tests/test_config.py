@@ -58,6 +58,8 @@ class TestMetricsConfig:
         cfg = MetricsConfig()
         assert cfg.wandb_project == "nash-llm"
         assert cfg.log_interval == 10
+        assert cfg.eval_max_batches == 20
+        assert cfg.final_eval_max_batches == 0
         assert "val_loss" in cfg.metrics
         assert "accuracy" in cfg.metrics
 

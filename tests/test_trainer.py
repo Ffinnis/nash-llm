@@ -52,6 +52,43 @@ class TestTrainer:
         eval_entries = [h for h in history if "val_loss" in h]
         assert len(eval_entries) > 0
 
+    @patch("nash_llm.training.trainer.compute_accuracy")
+    @patch("nash_llm.training.trainer.compute_val_loss")
+    def test_eval_uses_configured_periodic_max_batches(self, mock_val_loss, mock_accuracy, tmp_path):
+        cfg = self._make_config(tmp_path)
+        cfg.metrics.eval_max_batches = 7
+        cfg.metrics.final_eval_max_batches = 0
+        ckpt_dir = str(tmp_path / "checkpoints")
+        mock_val_loss.return_value = 1.23
+        mock_accuracy.return_value = 0.45
+
+        trainer = Trainer(cfg, checkpoint_dir=ckpt_dir)
+        trainer.train()
+
+        assert any(call.kwargs["max_batches"] == 7 for call in mock_val_loss.call_args_list)
+        assert any(call.kwargs["max_batches"] == 7 for call in mock_accuracy.call_args_list)
+
+    @patch("nash_llm.training.trainer.compute_accuracy")
+    @patch("nash_llm.training.trainer.compute_val_loss")
+    def test_final_eval_uses_configured_max_batches(self, mock_val_loss, mock_accuracy, tmp_path):
+        cfg = self._make_config(tmp_path)
+        cfg.train.max_steps = 2
+        cfg.train.eval_interval = 100
+        cfg.metrics.eval_max_batches = 5
+        cfg.metrics.final_eval_max_batches = 0
+        ckpt_dir = str(tmp_path / "checkpoints")
+        mock_val_loss.return_value = 1.23
+        mock_accuracy.return_value = 0.45
+
+        trainer = Trainer(cfg, checkpoint_dir=ckpt_dir)
+        history = trainer.train()
+
+        assert mock_val_loss.call_args_list[-1].kwargs["max_batches"] is None
+        assert mock_accuracy.call_args_list[-1].kwargs["max_batches"] is None
+        assert "final_val_loss" in history[-1]
+        assert "final_accuracy" in history[-1]
+        assert "final_perplexity" in history[-1]
+
     def test_progress_metrics_logged(self, tmp_path):
         cfg = self._make_config(tmp_path)
         ckpt_dir = str(tmp_path / "checkpoints")

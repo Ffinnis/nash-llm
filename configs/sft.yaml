@@ -23,6 +23,8 @@ metrics:
   wandb_project: nash-llm
   wandb_enabled: true
   log_interval: 10
+  eval_max_batches: 20
+  final_eval_max_batches: 0
   metrics:
     - val_loss
     - accuracy

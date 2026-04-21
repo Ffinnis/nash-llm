@@ -18,6 +18,10 @@ from nash_llm.config import NashConfig
 
 class Trainer:
     @staticmethod
+    def _resolve_eval_max_batches(value: int) -> int | None:
+        return None if value <= 0 else value
+
+    @staticmethod
     def _cuda_supports_bf16() -> bool:
         is_bf16_supported = getattr(torch.cuda, "is_bf16_supported", None)
         if callable(is_bf16_supported):
@@ -146,6 +150,14 @@ class Trainer:
             pg["lr"] = lr
         return lr
 
+    def _run_eval(self, max_batches: int | None) -> dict[str, float]:
+        self.model.eval()
+        val_loss = compute_val_loss(self.model, self.val_loader, max_batches=max_batches)
+        accuracy = compute_accuracy(self.model, self.val_loader, max_batches=max_batches)
+        perplexity = math.exp(val_loss) if val_loss < 20 else float("inf")
+        self.model.train()
+        return {"val_loss": val_loss, "accuracy": accuracy, "perplexity": perplexity}
+
     @staticmethod
     def _progress_bar(progress: float, width: int = 30) -> str:
         progress = max(0.0, min(1.0, progress))
@@ -271,23 +283,18 @@ class Trainer:
                 print(self._format_progress_log(train_metrics))
 
             if step > 0 and step % cfg.eval_interval == 0:
-                self.model.eval()
-                val_loss = compute_val_loss(self.model, self.val_loader, max_batches=20)
-                accuracy = compute_accuracy(self.model, self.val_loader, max_batches=20)
-                perplexity = math.exp(val_loss) if val_loss < 20 else float("inf")
-
-                eval_metrics = {"val_loss": val_loss, "accuracy": accuracy, "perplexity": perplexity}
+                eval_metrics = self._run_eval(
+                    self._resolve_eval_max_batches(self.config.metrics.eval_max_batches)
+                )
                 record.update(eval_metrics)
                 self.logger.log(eval_metrics, step=step)
 
-                if val_loss < self.best_val_loss:
-                    self.best_val_loss = val_loss
+                if eval_metrics["val_loss"] < self.best_val_loss:
+                    self.best_val_loss = eval_metrics["val_loss"]
                     save_checkpoint(
                         os.path.join(self.checkpoint_dir, "best.pt"),
                         self.model, self.optimizers, step=step, config=self.config, metrics=eval_metrics,
                     )
-
-                self.model.train()
 
             if step > 0 and step % cfg.checkpoint_interval == 0:
                 save_checkpoint(
@@ -298,6 +305,18 @@ class Trainer:
             history.append(record)
             if cfg.max_tokens > 0 and total_tokens_processed >= cfg.max_tokens:
                 break
+
+        if history:
+            final_metrics = self._run_eval(
+                self._resolve_eval_max_batches(self.config.metrics.final_eval_max_batches)
+            )
+            final_record = {
+                "final_val_loss": final_metrics["val_loss"],
+                "final_accuracy": final_metrics["accuracy"],
+                "final_perplexity": final_metrics["perplexity"],
+            }
+            history[-1].update(final_record)
+            self.logger.log(final_record, step=history[-1]["step"])
 
         self.logger.finish()
         return history

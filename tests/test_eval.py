@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import json
+import pytest
 from nash_llm.model import GPT
 from nash_llm.config import ModelConfig
 from nash_llm.data.dataset import PretrainDataset
@@ -32,6 +33,25 @@ class TestEvaluate:
         loader = self._make_val_loader(tmp_path)
         acc = compute_accuracy(self.model, loader, max_batches=3)
         assert 0.0 <= acc <= 1.0
+
+    def test_val_loss_weights_tokens_not_batches(self, tmp_path):
+        loader = self._make_val_loader(tmp_path, n_tokens=330, seq_len=32, batch_size=4)
+
+        losses = []
+        token_counts = []
+        device = next(self.model.parameters()).device
+        for x, y in loader:
+            x, y = x.to(device), y.to(device)
+            _, loss = self.model(x, y)
+            losses.append(loss.item())
+            token_counts.append(y.numel())
+
+        weighted = sum(loss * tokens for loss, tokens in zip(losses, token_counts)) / sum(token_counts)
+        unweighted = sum(losses) / len(losses)
+        computed = compute_val_loss(self.model, loader)
+
+        assert computed == pytest.approx(weighted)
+        assert abs(weighted - unweighted) > 1e-6
 
 
 class TestGenerate:

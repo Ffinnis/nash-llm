@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 def compute_val_loss(model: nn.Module, val_loader: DataLoader, max_batches: int | None = None) -> float:
     model.eval()
     total_loss = 0.0
-    n_batches = 0
+    total_tokens = 0
     device = next(model.parameters()).device
 
     for i, (x, y) in enumerate(val_loader):
@@ -15,10 +15,11 @@ def compute_val_loss(model: nn.Module, val_loader: DataLoader, max_batches: int 
             break
         x, y = x.to(device), y.to(device)
         _, loss = model(x, y)
-        total_loss += loss.item()
-        n_batches += 1
+        n_tokens = y.numel()
+        total_loss += loss.item() * n_tokens
+        total_tokens += n_tokens
 
-    return total_loss / n_batches if n_batches > 0 else 0.0
+    return total_loss / total_tokens if total_tokens > 0 else 0.0
 
 
 @torch.no_grad()

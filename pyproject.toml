@@ -8,7 +8,8 @@ version = "0.1.0"
 description = "Research LLM framework for pretraining and fine-tuning transformers"
 requires-python = ">=3.10"
 dependencies = [
-    "torch>=2.0",
+    "torch>=2.11",
+    "torchao",
     "tiktoken",
     "wandb",
     "numpy",

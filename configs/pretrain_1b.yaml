@@ -19,7 +19,7 @@ train:
   checkpoint_interval: 2000
   grad_accum_steps: 4
   compile: true
-  precision: bf16
+  precision: fp8
   muon_lr: 0.02
   muon_momentum: 0.95
   ns_steps: 5

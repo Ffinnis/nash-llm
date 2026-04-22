@@ -81,10 +81,10 @@ def _resolve_short_key(cfg: NashConfig, key: str) -> tuple[str, str]:
 
 def _validate_train_precision(value: str) -> str:
     if not isinstance(value, str):
-        raise ValueError(f"Unsupported train.precision '{value}'. Expected one of: bf16, fp16")
+        raise ValueError(f"Unsupported train.precision '{value}'. Expected one of: bf16, fp16, fp8")
     precision = value.lower()
-    if precision not in {"fp16", "bf16"}:
-        raise ValueError(f"Unsupported train.precision '{value}'. Expected one of: bf16, fp16")
+    if precision not in {"fp16", "bf16", "fp8"}:
+        raise ValueError(f"Unsupported train.precision '{value}'. Expected one of: bf16, fp16, fp8")
     return precision
 
 

@@ -95,7 +95,7 @@ class TestLoadConfig:
                 "activation": "gelu",
                 "position_embedding": "learned",
             },
-            "train": {"learning_rate": 1e-4, "precision": "fp16"},
+            "train": {"learning_rate": 1e-4, "precision": "fp8"},
         }
         yaml_path = tmp_path / "test.yaml"
         yaml_path.write_text(yaml.dump(yaml_content))
@@ -106,7 +106,7 @@ class TestLoadConfig:
         assert cfg.model.activation == "gelu"
         assert cfg.model.position_embedding == "learned"
         assert cfg.train.learning_rate == 1e-4
-        assert cfg.train.precision == "fp16"
+        assert cfg.train.precision == "fp8"
         assert cfg.model.n_heads == 12
         assert cfg.train.batch_size == 64
 
@@ -115,24 +115,24 @@ class TestLoadConfig:
         yaml_path = tmp_path / "test.yaml"
         yaml_path.write_text(yaml.dump(yaml_content))
 
-        overrides = {"model.n_layers": "12", "train.learning_rate": "1e-5", "train.precision": "fp16"}
+        overrides = {"model.n_layers": "12", "train.learning_rate": "1e-5", "train.precision": "fp8"}
         cfg = load_config(str(yaml_path), overrides=overrides)
         assert cfg.model.n_layers == 12
         assert cfg.train.learning_rate == 1e-5
-        assert cfg.train.precision == "fp16"
+        assert cfg.train.precision == "fp8"
 
     def test_cli_overrides_without_yaml(self):
         overrides = {
             "model.n_layers": "6",
             "train.batch_size": "32",
-            "precision": "fp16",
+            "precision": "fp8",
             "activation": "gelu",
             "position_embedding": "learned",
         }
         cfg = load_config(config_path=None, overrides=overrides)
         assert cfg.model.n_layers == 6
         assert cfg.train.batch_size == 32
-        assert cfg.train.precision == "fp16"
+        assert cfg.train.precision == "fp8"
         assert cfg.model.activation == "gelu"
         assert cfg.model.position_embedding == "learned"
 

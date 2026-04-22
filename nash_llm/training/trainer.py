@@ -14,6 +14,7 @@ from nash_llm.training.checkpoint import save_checkpoint
 from nash_llm.metrics.logger import MetricsLogger
 from nash_llm.eval.evaluate import compute_val_loss, compute_accuracy
 from nash_llm.config import NashConfig
+from nash_llm.training.fp8 import apply_fp8_training
 
 
 class Trainer:
@@ -29,6 +30,11 @@ class Trainer:
         major, _ = torch.cuda.get_device_capability()
         return major >= 8
 
+    @staticmethod
+    def _cuda_supports_fp8() -> bool:
+        major, minor = torch.cuda.get_device_capability()
+        return major > 8 or (major == 8 and minor >= 9)
+
     @classmethod
     def _resolve_precision_mode(
         cls,
@@ -36,12 +42,19 @@ class Trainer:
         precision: str,
     ) -> tuple[bool, torch.dtype | None, bool]:
         precision = precision.lower()
-        if precision not in {"fp16", "bf16"}:
-            raise ValueError(f"Unsupported precision '{precision}'. Expected one of: bf16, fp16")
+        if precision not in {"fp16", "bf16", "fp8"}:
+            raise ValueError(f"Unsupported precision '{precision}'. Expected one of: bf16, fp16, fp8")
         if device.type != "cuda":
             return False, None, False
         if precision == "fp16":
             return True, torch.float16, True
+        if precision == "fp8":
+            if not cls._cuda_supports_fp8():
+                raise RuntimeError(
+                    "train.precision=fp8 requires CUDA FP8 support on this GPU. "
+                    "Use train.precision=bf16 on unsupported hardware."
+                )
+            return True, torch.bfloat16, False
         if not cls._cuda_supports_bf16():
             raise RuntimeError(
                 "train.precision=bf16 requires CUDA bf16 support on this GPU. "
@@ -69,6 +82,8 @@ class Trainer:
         )
 
         self.model: GPT = GPT(config.model).to(self.device)
+        if self.device.type == "cuda" and config.train.precision == "fp8":
+            self.model = apply_fp8_training(self.model, self.device)  # type: ignore[assignment]
 
         # Fused AdamW can be numerically brittle in some bf16 stacks; keep it for fp16 path only.
         use_fused_adamw = self.device.type == "cuda" and config.train.precision == "fp16"

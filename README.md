@@ -15,6 +15,7 @@ Notes:
 
 - Training is CUDA-oriented. Verify `nvidia-smi` works before starting.
 - Default precision is `bf16`. If your GPU does not support bf16, use `--precision fp16`.
+- FP8 training is available for compatible CUDA GPUs via `torchao`; use `--precision fp8` on Hopper/Ada-or-newer hardware with project dependencies synced.
 - This repo uses `uv`, not `pip`.
 - The current pretraining configs are tuned around an H100-class GPU. In particular, the default `batch_size` and `grad_accum_steps` values assume H100-level memory/performance and will likely need to be reduced on smaller GPUs.
 
@@ -111,6 +112,13 @@ If your GPU does not support bf16:
 
 ```bash
 uv run python scripts/train.py --config configs/pretrain_small.yaml --precision fp16
+```
+
+If your GPU supports FP8 and you want to test the float8 linear path:
+
+```bash
+uv sync --group dev
+uv run python scripts/train.py --config configs/pretrain_1b.yaml --precision fp8
 ```
 
 If you want to disable wandb:
@@ -264,4 +272,4 @@ configs/
 - Tokenizer: GPT-2 via `tiktoken` (`vocab_size=50257`)
 - Tokenized datasets are written under `datasets/`
 - Checkpoints are written under `checkpoints/`
-- Mixed precision supports `bf16` and `fp16`
+- Mixed precision supports `bf16`, `fp16`, and `fp8`

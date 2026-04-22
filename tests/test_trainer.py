@@ -146,10 +146,22 @@ class TestTrainer:
         assert amp_dtype == torch.bfloat16
         assert use_grad_scaler is False
 
+    def test_resolve_precision_mode_fp8_uses_bf16_amp_without_scaler(self):
+        with patch.object(Trainer, "_cuda_supports_fp8", return_value=True):
+            use_amp, amp_dtype, use_grad_scaler = Trainer._resolve_precision_mode(torch.device("cuda"), "fp8")
+        assert use_amp is True
+        assert amp_dtype == torch.bfloat16
+        assert use_grad_scaler is False
+
     def test_resolve_precision_mode_bf16_unsupported_raises(self):
         with patch.object(Trainer, "_cuda_supports_bf16", return_value=False):
             with pytest.raises(RuntimeError, match="train.precision=bf16"):
                 Trainer._resolve_precision_mode(torch.device("cuda"), "bf16")
+
+    def test_resolve_precision_mode_fp8_unsupported_raises(self):
+        with patch.object(Trainer, "_cuda_supports_fp8", return_value=False):
+            with pytest.raises(RuntimeError, match="train.precision=fp8"):
+                Trainer._resolve_precision_mode(torch.device("cuda"), "fp8")
 
     def test_resolve_precision_mode_cpu_disables_amp(self):
         use_amp, amp_dtype, use_grad_scaler = Trainer._resolve_precision_mode(torch.device("cpu"), "bf16")

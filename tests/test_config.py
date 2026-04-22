@@ -13,15 +13,21 @@ class TestModelConfig:
         assert cfg.vocab_size == 50257
         assert cfg.max_seq_len == 1024
         assert cfg.dropout == 0.1
+        assert cfg.activation == "swiglu"
         assert cfg.position_embedding == "rope"
         assert cfg.rope_base == 10_000.0
 
     def test_custom_values(self):
-        cfg = ModelConfig(n_layers=6, d_model=512, position_embedding="learned")
+        cfg = ModelConfig(n_layers=6, d_model=512, activation="gelu", position_embedding="learned")
         assert cfg.n_layers == 6
         assert cfg.d_model == 512
         assert cfg.n_heads == 12
+        assert cfg.activation == "gelu"
         assert cfg.position_embedding == "learned"
+
+    def test_invalid_activation_rejected_on_init(self):
+        with pytest.raises(ValueError, match="Unsupported model.activation"):
+            ModelConfig(activation="reglu")
 
     def test_invalid_position_embedding_rejected_on_init(self):
         with pytest.raises(ValueError, match="Unsupported model.position_embedding"):
@@ -83,7 +89,12 @@ class TestNashConfig:
 class TestLoadConfig:
     def test_load_from_yaml(self, tmp_path):
         yaml_content = {
-            "model": {"n_layers": 6, "d_model": 512, "position_embedding": "learned"},
+            "model": {
+                "n_layers": 6,
+                "d_model": 512,
+                "activation": "gelu",
+                "position_embedding": "learned",
+            },
             "train": {"learning_rate": 1e-4, "precision": "fp16"},
         }
         yaml_path = tmp_path / "test.yaml"
@@ -92,6 +103,7 @@ class TestLoadConfig:
         cfg = load_config(str(yaml_path))
         assert cfg.model.n_layers == 6
         assert cfg.model.d_model == 512
+        assert cfg.model.activation == "gelu"
         assert cfg.model.position_embedding == "learned"
         assert cfg.train.learning_rate == 1e-4
         assert cfg.train.precision == "fp16"
@@ -114,13 +126,26 @@ class TestLoadConfig:
             "model.n_layers": "6",
             "train.batch_size": "32",
             "precision": "fp16",
+            "activation": "gelu",
             "position_embedding": "learned",
         }
         cfg = load_config(config_path=None, overrides=overrides)
         assert cfg.model.n_layers == 6
         assert cfg.train.batch_size == 32
         assert cfg.train.precision == "fp16"
+        assert cfg.model.activation == "gelu"
         assert cfg.model.position_embedding == "learned"
+
+    def test_invalid_activation_override_raises(self):
+        with pytest.raises(ValueError, match="Unsupported model.activation"):
+            load_config(config_path=None, overrides={"activation": "reglu"})
+
+    def test_invalid_activation_yaml_raises(self, tmp_path):
+        yaml_content = {"model": {"activation": "reglu"}}
+        yaml_path = tmp_path / "test.yaml"
+        yaml_path.write_text(yaml.dump(yaml_content))
+        with pytest.raises(ValueError, match="Unsupported model.activation"):
+            load_config(str(yaml_path))
 
     def test_invalid_precision_override_raises(self):
         with pytest.raises(ValueError, match="Unsupported train.precision"):

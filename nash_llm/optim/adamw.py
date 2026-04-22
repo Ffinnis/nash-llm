@@ -28,7 +28,7 @@ def configure_optimizers(
 
     muon_param_ids: set[int] = set()
 
-    muon_patterns = ("out_proj.weight", "fc1.weight", "fc2.weight")
+    muon_patterns = ("out_proj.weight", "fc1.weight", "fc_gate.weight", "fc2.weight")
     teon_patterns = ("q_proj.weight", "k_proj.weight", "v_proj.weight")
 
     # Build TEON groups: stack K=2 consecutive blocks for each of Q/K/V

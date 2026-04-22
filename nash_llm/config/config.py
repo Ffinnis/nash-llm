@@ -11,10 +11,12 @@ class ModelConfig:
     vocab_size: int = 50257
     max_seq_len: int = 1024
     dropout: float = 0.1
+    activation: str = "swiglu"
     position_embedding: str = "rope"
     rope_base: float = 10_000.0
 
     def __post_init__(self):
+        self.activation = _validate_model_activation(self.activation)
         self.position_embedding = _validate_model_position_embedding(self.position_embedding)
         if self.rope_base <= 0:
             raise ValueError(f"model.rope_base must be positive, got {self.rope_base}")
@@ -86,6 +88,19 @@ def _validate_train_precision(value: str) -> str:
     return precision
 
 
+def _validate_model_activation(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(
+            f"Unsupported model.activation '{value}'. Expected one of: gelu, relu2, swiglu"
+        )
+    activation = value.lower()
+    if activation not in {"gelu", "relu2", "swiglu"}:
+        raise ValueError(
+            f"Unsupported model.activation '{value}'. Expected one of: gelu, relu2, swiglu"
+        )
+    return activation
+
+
 def _validate_model_position_embedding(value: str) -> str:
     if not isinstance(value, str):
         raise ValueError(
@@ -122,6 +137,8 @@ def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
             parsed = field_type(value)
         if section_name == "train" and field_name == "precision":
             parsed = _validate_train_precision(str(parsed))
+        if section_name == "model" and field_name == "activation":
+            parsed = _validate_model_activation(str(parsed))
         if section_name == "model" and field_name == "position_embedding":
             parsed = _validate_model_position_embedding(str(parsed))
         setattr(section, field_name, parsed)
@@ -135,6 +152,7 @@ def load_config(config_path: str | None = None, overrides: dict[str, str] | None
             raw = yaml.safe_load(f) or {}
         if "model" in raw:
             cfg.model = ModelConfig(**{**vars(cfg.model), **raw["model"]})
+            cfg.model.activation = _validate_model_activation(cfg.model.activation)
             cfg.model.position_embedding = _validate_model_position_embedding(cfg.model.position_embedding)
         if "train" in raw:
             cfg.train = TrainConfig(**{**vars(cfg.train), **raw["train"]})

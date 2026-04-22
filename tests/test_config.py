@@ -13,7 +13,7 @@ class TestModelConfig:
         assert cfg.vocab_size == 50257
         assert cfg.max_seq_len == 1024
         assert cfg.dropout == 0.1
-        assert cfg.activation == "relu2"
+        assert cfg.activation == "swiglu"
         assert cfg.position_embedding == "rope"
         assert cfg.rope_base == 10_000.0
 
@@ -27,7 +27,7 @@ class TestModelConfig:
 
     def test_invalid_activation_rejected_on_init(self):
         with pytest.raises(ValueError, match="Unsupported model.activation"):
-            ModelConfig(activation="swiglu")
+            ModelConfig(activation="reglu")
 
     def test_invalid_position_embedding_rejected_on_init(self):
         with pytest.raises(ValueError, match="Unsupported model.position_embedding"):
@@ -138,10 +138,10 @@ class TestLoadConfig:
 
     def test_invalid_activation_override_raises(self):
         with pytest.raises(ValueError, match="Unsupported model.activation"):
-            load_config(config_path=None, overrides={"activation": "swiglu"})
+            load_config(config_path=None, overrides={"activation": "reglu"})
 
     def test_invalid_activation_yaml_raises(self, tmp_path):
-        yaml_content = {"model": {"activation": "swiglu"}}
+        yaml_content = {"model": {"activation": "reglu"}}
         yaml_path = tmp_path / "test.yaml"
         yaml_path.write_text(yaml.dump(yaml_content))
         with pytest.raises(ValueError, match="Unsupported model.activation"):

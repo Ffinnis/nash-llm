@@ -233,6 +233,21 @@ class TestConfigureOptimizers:
 
         assert qkv_param_ids == teon_param_ids, "TEON should contain exactly the Q/K/V params"
 
+    def test_muon_contains_swiglu_gate_weights(self):
+        opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1)
+        muon_ids = set()
+        for pg in opts[0].param_groups:
+            for p in pg["params"]:
+                muon_ids.add(id(p))
+
+        gate_param_ids = set()
+        for name, p in self.model.named_parameters():
+            if "fc_gate.weight" in name:
+                gate_param_ids.add(id(p))
+
+        assert gate_param_ids
+        assert gate_param_ids <= muon_ids, "SwiGLU gate weights should be optimized by Muon"
+
     def test_teon_groups_have_k2(self):
         """Each TEON group should have K=2 params."""
         opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1)

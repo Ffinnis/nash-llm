@@ -11,7 +11,7 @@ class ModelConfig:
     vocab_size: int = 50257
     max_seq_len: int = 1024
     dropout: float = 0.1
-    activation: str = "relu2"
+    activation: str = "swiglu"
     position_embedding: str = "rope"
     rope_base: float = 10_000.0
 
@@ -91,12 +91,12 @@ def _validate_train_precision(value: str) -> str:
 def _validate_model_activation(value: str) -> str:
     if not isinstance(value, str):
         raise ValueError(
-            f"Unsupported model.activation '{value}'. Expected one of: gelu, relu2"
+            f"Unsupported model.activation '{value}'. Expected one of: gelu, relu2, swiglu"
         )
     activation = value.lower()
-    if activation not in {"gelu", "relu2"}:
+    if activation not in {"gelu", "relu2", "swiglu"}:
         raise ValueError(
-            f"Unsupported model.activation '{value}'. Expected one of: gelu, relu2"
+            f"Unsupported model.activation '{value}'. Expected one of: gelu, relu2, swiglu"
         )
     return activation
 

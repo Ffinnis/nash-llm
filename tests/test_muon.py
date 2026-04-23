@@ -108,6 +108,23 @@ class TestMuonOptimizer:
 
         assert not torch.allclose(buf_after_1, buf_after_2)
 
+    def test_muon_tracks_second_moment(self):
+        """Muon² should maintain Adam-style second moment state."""
+        opt = Muon(
+            muon_params=self.params[:1],
+            teon_params=[],
+            lr=0.02,
+            momentum=0.95,
+            ns_steps=3,
+        )
+
+        self.params[0].grad = torch.randn_like(self.params[0])
+        opt.step()
+
+        state = opt.state[self.params[0]]
+        assert "variance_buffer" in state
+        assert torch.any(state["variance_buffer"] > 0)
+
 
 class TestTEONStacking:
     def test_teon_stacking_updates_all_params(self):
@@ -133,7 +150,7 @@ class TestTEONStacking:
         assert not torch.allclose(original[1], p2)
 
     def test_teon_stacked_ortho_differs_from_independent(self):
-        """TEON stacking should produce different updates than per-layer MUON."""
+        """TEON stacking should produce different updates than per-layer Muon²."""
         torch.manual_seed(42)
         p1 = nn.Parameter(torch.randn(64, 128))
         p2 = nn.Parameter(torch.randn(64, 128))

@@ -11,7 +11,7 @@ def configure_optimizers(
     weight_decay: float,
     muon_lr: float = 0.02,
     muon_momentum: float = 0.95,
-    ns_steps: int = 5,
+    ns_steps: int = 3,
     betas: tuple[float, float] = (0.9, 0.95),
     fused: bool | None = None,
 ) -> list[torch.optim.Optimizer]:

@@ -60,7 +60,7 @@ class TestTrainConfig:
         assert cfg.precision == "bf16"
         assert cfg.muon_lr == 0.02
         assert cfg.muon_momentum == 0.95
-        assert cfg.ns_steps == 5
+        assert cfg.ns_steps == 3
 
     def test_custom(self):
         cfg = TrainConfig(learning_rate=1e-4, batch_size=32)

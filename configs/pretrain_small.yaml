@@ -22,7 +22,7 @@ train:
   precision: bf16
   muon_lr: 0.02
   muon_momentum: 0.95
-  ns_steps: 5
+  ns_steps: 3
 
 data:
   dataset: tinystories

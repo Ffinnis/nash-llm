@@ -67,20 +67,27 @@ def orthogonalize(M: torch.Tensor, steps: int = 5) -> torch.Tensor:
     return polar_express(M, steps)
 
 
+def _preconditioned_momentum(state: dict, eps: float) -> torch.Tensor:
+    return state["momentum_buffer"].div(state["variance_buffer"].sqrt().add(eps))
+
+
 class Muon(Optimizer):
-    """MUON/TEON optimizer with Polar Express orthogonalization.
+    """Muon²/TEON optimizer with Polar Express orthogonalization.
 
     Handles two types of parameter groups:
     - muon_params: per-layer orthogonalization (out_proj, MLP weights)
     - teon_params: cross-layer stacking of K consecutive blocks (Q/K/V)
 
-    Math (MUON per param):
+    Math (Muon² per param):
         M_t = mu * M_{t-1} + (1 - mu) * G_t
-        O_t = Ortho(M_t)
+        V_t = beta2 * V_{t-1} + (1 - beta2) * G_t^2
+        P_t = M_t / (sqrt(V_t) + eps)
+        O_t = Ortho(P_t)
         W_t = W_{t-1} - lr * sqrt(m/n) * O_t
 
     Math (TEON per group of K params):
-        Z = [M^(1) | M^(2) | ... | M^(K)]   (mode-1 matricization)
+        P^(k) = M^(k) / (sqrt(V^(k)) + eps)
+        Z = [P^(1) | P^(2) | ... | P^(K)]   (mode-1 matricization)
         Q = Ortho(Z)
         O^(k) = Q[:, k*n:(k+1)*n]            (split back)
         W^(k)_t = W^(k)_{t-1} - lr * sqrt(m/n) * O^(k)
@@ -92,8 +99,10 @@ class Muon(Optimizer):
         teon_params: list[list[nn.Parameter]],
         lr: float = 0.02,
         momentum: float = 0.95,
+        beta2: float = 0.95,
+        eps: float = 1e-8,
         weight_decay: float = 0.0,
-        ns_steps: int = 5,
+        ns_steps: int = 3,
     ):
         # Flatten all params for Optimizer registration
         all_params: list[nn.Parameter] = []
@@ -104,6 +113,8 @@ class Muon(Optimizer):
         defaults = dict(
             lr=lr,
             momentum=momentum,
+            beta2=beta2,
+            eps=eps,
             weight_decay=weight_decay,
             ns_steps=ns_steps,
         )
@@ -137,26 +148,34 @@ class Muon(Optimizer):
 
         lr = self.defaults["lr"]
         mu = self.defaults["momentum"]
+        beta2 = self.defaults["beta2"]
+        eps = self.defaults["eps"]
         wd = self.defaults["weight_decay"]
         ns_steps = self.defaults["ns_steps"]
 
-        # --- MUON: batched per-shape orthogonalization ---
+        # --- Muon²: batched per-shape orthogonalization ---
         # Phase 1: update all momentum buffers
         for param in self._muon_params:
             if param.grad is None:
                 continue
             state = self.state[param]
-            if len(state) == 0:
+            if "momentum_buffer" not in state:
                 state["momentum_buffer"] = torch.zeros_like(param.data)
+            if "variance_buffer" not in state:
+                state["variance_buffer"] = torch.zeros_like(param.data)
             buf = state["momentum_buffer"]
+            var = state["variance_buffer"]
             buf.mul_(mu).add_(param.grad, alpha=1.0 - mu)
+            var.mul_(beta2).addcmul_(param.grad, param.grad, value=1.0 - beta2)
 
         # Phase 2: batched orthogonalization by shape
         for (m, n), params in self._muon_shape_groups.items():
             if all(p.grad is not None for p in params):
                 # Fast path: all grads present → fixed batch size
-                bufs = torch.stack([self.state[p]["momentum_buffer"] for p in params])
-                ortho = orthogonalize(bufs, ns_steps)
+                preconditioned = torch.stack(
+                    [_preconditioned_momentum(self.state[p], eps) for p in params]
+                )
+                ortho = orthogonalize(preconditioned, ns_steps)
                 scale = (m / n) ** 0.5
                 for i, p in enumerate(params):
                     if wd > 0:
@@ -167,8 +186,7 @@ class Muon(Optimizer):
                 for p in params:
                     if p.grad is None:
                         continue
-                    buf = self.state[p]["momentum_buffer"]
-                    o = orthogonalize(buf, ns_steps)
+                    o = orthogonalize(_preconditioned_momentum(self.state[p], eps), ns_steps)
                     if wd > 0:
                         p.data.mul_(1.0 - lr * wd)
                     p.data.add_(o, alpha=-lr * (m / n) ** 0.5)
@@ -180,10 +198,14 @@ class Muon(Optimizer):
                 if param.grad is None:
                     continue
                 state = self.state[param]
-                if len(state) == 0:
+                if "momentum_buffer" not in state:
                     state["momentum_buffer"] = torch.zeros_like(param.data)
+                if "variance_buffer" not in state:
+                    state["variance_buffer"] = torch.zeros_like(param.data)
                 buf = state["momentum_buffer"]
+                var = state["variance_buffer"]
                 buf.mul_(mu).add_(param.grad, alpha=1.0 - mu)
+                var.mul_(beta2).addcmul_(param.grad, param.grad, value=1.0 - beta2)
 
         # Phase 2: batched orthogonalization by (m, n, K)
         for (m, n, K), groups in self._teon_shape_groups.items():
@@ -199,8 +221,10 @@ class Muon(Optimizer):
             if complete:
                 Z_list = []
                 for group in complete:
-                    momentums = [self.state[p]["momentum_buffer"] for p in group]
-                    Z_list.append(torch.cat(momentums, dim=1))
+                    preconditioned = [
+                        _preconditioned_momentum(self.state[p], eps) for p in group
+                    ]
+                    Z_list.append(torch.cat(preconditioned, dim=1))
                 Z_batch = torch.stack(Z_list)
                 Q_batch = orthogonalize(Z_batch, ns_steps)
                 scale = (m / n) ** 0.5
@@ -211,13 +235,12 @@ class Muon(Optimizer):
                             param.data.mul_(1.0 - lr * wd)
                         param.data.add_(ortho_slices[i], alpha=-lr * scale)
 
-            # Fallback: per-param MUON for incomplete groups
+            # Fallback: per-param Muon² for incomplete groups
             for group in incomplete:
                 for param in group:
                     if param.grad is None:
                         continue
-                    buf = self.state[param]["momentum_buffer"]
-                    o = orthogonalize(buf, ns_steps)
+                    o = orthogonalize(_preconditioned_momentum(self.state[param], eps), ns_steps)
                     if wd > 0:
                         param.data.mul_(1.0 - lr * wd)
                     param.data.add_(o, alpha=-lr * (m / n) ** 0.5)

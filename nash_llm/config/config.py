@@ -47,7 +47,7 @@ class TrainConfig:
     precision: str = "bf16"
     muon_lr: float = 0.02
     muon_momentum: float = 0.95
-    ns_steps: int = 5
+    ns_steps: int = 3
 
 
 @dataclass

@@ -184,6 +184,7 @@ tail -f train.log
 These config files currently exist:
 
 - `configs/pretrain_small.yaml`
+- `configs/pretrain_small_qv.yaml`
 - `configs/pretrain_100m.yaml`
 - `configs/pretrain_1b.yaml`
 - `configs/pretrain_chinchilla.yaml`
@@ -203,6 +204,7 @@ uv sync --group dev
 
 ```bash
 uv run python scripts/train.py --config configs/pretrain_small.yaml
+uv run python scripts/train.py --config configs/pretrain_small_qv.yaml
 uv run python scripts/train.py --config configs/pretrain_100m.yaml
 uv run python scripts/train.py --config configs/pretrain_1b.yaml
 uv run python scripts/train.py --config configs/pretrain_chinchilla.yaml
@@ -215,7 +217,17 @@ Short keys auto-resolve, so both simple and qualified overrides are supported:
 ```bash
 uv run python scripts/train.py --config configs/pretrain_small.yaml --max_steps 50 --learning_rate 1e-3
 uv run python scripts/train.py --config configs/pretrain_small.yaml --muon_lr 0.03
+uv run python scripts/train.py --config configs/pretrain_small.yaml --attention_variant qv
 ```
+
+### Experimental attention variants
+
+`model.attention_variant` currently supports:
+
+- `qkv`: standard baseline with explicit `q_proj`, `k_proj`, `v_proj`
+- `qv`: experimental variant that removes the explicit `k_proj` and scores attention with `Q @ V_score^T`
+
+In the `qv` variant, TEON is applied only to `q_proj.weight` and `v_proj.weight`.
 
 ### Generate
 

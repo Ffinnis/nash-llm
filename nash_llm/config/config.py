@@ -12,11 +12,13 @@ class ModelConfig:
     max_seq_len: int = 1024
     dropout: float = 0.1
     activation: str = "swiglu"
+    attention_variant: str = "qkv"
     position_embedding: str = "rope"
     rope_base: float = 10_000.0
 
     def __post_init__(self):
         self.activation = _validate_model_activation(self.activation)
+        self.attention_variant = _validate_model_attention_variant(self.attention_variant)
         self.position_embedding = _validate_model_position_embedding(self.position_embedding)
         if self.rope_base <= 0:
             raise ValueError(f"model.rope_base must be positive, got {self.rope_base}")
@@ -114,6 +116,19 @@ def _validate_model_position_embedding(value: str) -> str:
     return position_embedding
 
 
+def _validate_model_attention_variant(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(
+            f"Unsupported model.attention_variant '{value}'. Expected one of: qkv, qv"
+        )
+    attention_variant = value.lower()
+    if attention_variant not in {"qkv", "qv"}:
+        raise ValueError(
+            f"Unsupported model.attention_variant '{value}'. Expected one of: qkv, qv"
+        )
+    return attention_variant
+
+
 def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
     for key, value in overrides.items():
         parts = key.split(".")
@@ -139,6 +154,8 @@ def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
             parsed = _validate_train_precision(str(parsed))
         if section_name == "model" and field_name == "activation":
             parsed = _validate_model_activation(str(parsed))
+        if section_name == "model" and field_name == "attention_variant":
+            parsed = _validate_model_attention_variant(str(parsed))
         if section_name == "model" and field_name == "position_embedding":
             parsed = _validate_model_position_embedding(str(parsed))
         setattr(section, field_name, parsed)
@@ -153,6 +170,7 @@ def load_config(config_path: str | None = None, overrides: dict[str, str] | None
         if "model" in raw:
             cfg.model = ModelConfig(**{**vars(cfg.model), **raw["model"]})
             cfg.model.activation = _validate_model_activation(cfg.model.activation)
+            cfg.model.attention_variant = _validate_model_attention_variant(cfg.model.attention_variant)
             cfg.model.position_embedding = _validate_model_position_embedding(cfg.model.position_embedding)
         if "train" in raw:
             cfg.train = TrainConfig(**{**vars(cfg.train), **raw["train"]})

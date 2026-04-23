@@ -46,3 +46,31 @@ class TestMultiHeadAttention:
         attn = MultiHeadAttention(ModelConfig(d_model=64, n_heads=4, max_seq_len=32, position_embedding="learned"))
         assert not hasattr(attn, "rope_cos")
         assert not hasattr(attn, "rope_sin")
+
+    def test_qv_variant_does_not_create_k_proj(self):
+        attn = MultiHeadAttention(
+            ModelConfig(
+                d_model=64,
+                n_heads=4,
+                max_seq_len=32,
+                dropout=0.0,
+                attention_variant="qv",
+            )
+        )
+        assert hasattr(attn, "q_proj")
+        assert hasattr(attn, "v_proj")
+        assert not hasattr(attn, "k_proj")
+
+    def test_qv_variant_preserves_shape(self):
+        attn = MultiHeadAttention(
+            ModelConfig(
+                d_model=64,
+                n_heads=4,
+                max_seq_len=32,
+                dropout=0.0,
+                attention_variant="qv",
+            )
+        )
+        x = torch.randn(2, 16, 64)
+        out = attn(x)
+        assert out.shape == (2, 16, 64)

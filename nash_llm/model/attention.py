@@ -15,10 +15,12 @@ class MultiHeadAttention(nn.Module):
 
         self.n_heads = config.n_heads
         self.head_dim = config.d_model // config.n_heads
+        self.attention_variant = config.attention_variant
         self.position_embedding = config.position_embedding
 
         self.q_proj = nn.Linear(config.d_model, config.d_model)
-        self.k_proj = nn.Linear(config.d_model, config.d_model)
+        if self.attention_variant == "qkv":
+            self.k_proj = nn.Linear(config.d_model, config.d_model)
         self.v_proj = nn.Linear(config.d_model, config.d_model)
         self.out_proj = nn.Linear(config.d_model, config.d_model)
         self.dropout_p = config.dropout
@@ -65,21 +67,21 @@ class MultiHeadAttention(nn.Module):
         B, T, C = x.shape
 
         q = self.q_proj(x)
-        k = self.k_proj(x)
         v = self.v_proj(x)
+        attn_k = self.k_proj(x) if self.attention_variant == "qkv" else v
 
         q = q.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        k = k.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        attn_k = attn_k.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
 
         if self.position_embedding == "rope":
             q = self._apply_rope(q, T)
-            k = self._apply_rope(k, T)
+            attn_k = self._apply_rope(attn_k, T)
 
         if hasattr(F, "scaled_dot_product_attention"):
             out = F.scaled_dot_product_attention(
                 q,
-                k,
+                attn_k,
                 v,
                 attn_mask=None,
                 dropout_p=self.dropout_p if self.training else 0.0,
@@ -87,7 +89,7 @@ class MultiHeadAttention(nn.Module):
             )
         else:
             scale = math.sqrt(self.head_dim)
-            attn = (q @ k.transpose(-2, -1)) / scale
+            attn = (q @ attn_k.transpose(-2, -1)) / scale
             attn = attn.masked_fill(self.mask[:, :, :T, :T] == 0, float("-inf"))
             attn = torch.softmax(attn, dim=-1)
             attn = self.attn_dropout(attn)

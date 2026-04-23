@@ -278,6 +278,35 @@ class TestConfigureOptimizers:
         ]
         assert group_names == expected
 
+    def test_qv_variant_teon_contains_only_q_and_v(self):
+        cfg = ModelConfig(
+            n_layers=4,
+            n_heads=4,
+            d_model=64,
+            d_ff=256,
+            vocab_size=100,
+            max_seq_len=32,
+            dropout=0.0,
+            attention_variant="qv",
+        )
+        model = GPT(cfg)
+        opts = configure_optimizers(model, lr=3e-4, weight_decay=0.1)
+        muon_opt = opts[0]
+        assert isinstance(muon_opt, Muon)
+
+        teon_param_ids = set()
+        for group in muon_opt._teon_groups:
+            for p in group:
+                teon_param_ids.add(id(p))
+
+        qv_param_ids = set()
+        for name, p in model.named_parameters():
+            if any(pat in name for pat in ["q_proj.weight", "v_proj.weight"]):
+                qv_param_ids.add(id(p))
+            assert "k_proj.weight" not in name
+
+        assert teon_param_ids == qv_param_ids
+
 
 class TestAttentionSplitQKV:
     def test_output_shape_preserved(self):
@@ -312,3 +341,21 @@ class TestAttentionSplitQKV:
         assert "blocks.0.attn.v_proj.weight" in param_names
         assert "blocks.0.attn.q_proj.bias" in param_names
         assert "blocks.0.attn.qkv.weight" not in param_names
+
+    def test_qv_param_names_exclude_key_projection(self):
+        cfg = ModelConfig(
+            n_layers=2,
+            n_heads=4,
+            d_model=64,
+            d_ff=256,
+            vocab_size=100,
+            max_seq_len=32,
+            dropout=0.0,
+            attention_variant="qv",
+        )
+        model = GPT(cfg)
+
+        param_names = {name for name, _ in model.named_parameters()}
+        assert "blocks.0.attn.q_proj.weight" in param_names
+        assert "blocks.0.attn.v_proj.weight" in param_names
+        assert "blocks.0.attn.k_proj.weight" not in param_names

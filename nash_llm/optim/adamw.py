@@ -29,13 +29,16 @@ def configure_optimizers(
     muon_param_ids: set[int] = set()
 
     muon_patterns = ("out_proj.weight", "fc1.weight", "fc_gate.weight", "fc2.weight")
-    teon_patterns = ("q_proj.weight", "k_proj.weight", "v_proj.weight")
+    named_params = [(name, param) for name, param in model.named_parameters() if param.requires_grad]
+    has_key_projection = any("k_proj.weight" in name for name, _ in named_params)
+    teon_patterns = ["q_proj.weight"]
+    if has_key_projection:
+        teon_patterns.append("k_proj.weight")
+    teon_patterns.append("v_proj.weight")
 
     # Build TEON groups: stack K=2 consecutive blocks for each of Q/K/V
     teon_by_type: dict[str, list[nn.Parameter]] = {p: [] for p in teon_patterns}
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            continue
+    for name, param in named_params:
         for pattern in teon_patterns:
             if pattern in name:
                 teon_by_type[pattern].append(param)
@@ -54,8 +57,8 @@ def configure_optimizers(
             muon_params.append(p)
 
     # Collect MUON per-layer params (out_proj, fc1, fc2) + remaining to AdamW
-    for name, param in model.named_parameters():
-        if not param.requires_grad or id(param) in muon_param_ids:
+    for name, param in named_params:
+        if id(param) in muon_param_ids:
             continue
         matched = False
         for pattern in muon_patterns:

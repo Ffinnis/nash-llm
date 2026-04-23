@@ -44,6 +44,14 @@ class TestGPT:
         ))
         assert model.pos_emb is not None
 
+    def test_qv_attention_variant_removes_key_projection(self):
+        model = GPT(ModelConfig(
+            n_layers=2, n_heads=4, d_model=64, d_ff=256,
+            vocab_size=100, max_seq_len=32, dropout=0.0,
+            attention_variant="qv",
+        ))
+        assert not hasattr(model.blocks[0].attn, "k_proj")
+
     def test_parameter_count_small(self):
         total = sum(p.numel() for p in self.model.parameters())
         assert total > 0

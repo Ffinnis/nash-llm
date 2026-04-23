@@ -15,6 +15,7 @@ class TestModelConfig:
         assert cfg.dropout == 0.1
         assert cfg.activation == "swiglu"
         assert cfg.attention_variant == "qkv"
+        assert cfg.qv_ka_ctx_factor == 2
         assert cfg.position_embedding == "rope"
         assert cfg.rope_base == 10_000.0
 
@@ -23,14 +24,16 @@ class TestModelConfig:
             n_layers=6,
             d_model=512,
             activation="gelu",
-            attention_variant="qv",
+            attention_variant="qv_ka",
+            qv_ka_ctx_factor=1,
             position_embedding="learned",
         )
         assert cfg.n_layers == 6
         assert cfg.d_model == 512
         assert cfg.n_heads == 12
         assert cfg.activation == "gelu"
-        assert cfg.attention_variant == "qv"
+        assert cfg.attention_variant == "qv_ka"
+        assert cfg.qv_ka_ctx_factor == 1
         assert cfg.position_embedding == "learned"
 
     def test_invalid_activation_rejected_on_init(self):
@@ -40,6 +43,10 @@ class TestModelConfig:
     def test_invalid_attention_variant_rejected_on_init(self):
         with pytest.raises(ValueError, match="Unsupported model.attention_variant"):
             ModelConfig(attention_variant="mla")
+
+    def test_invalid_qv_ka_ctx_factor_rejected_on_init(self):
+        with pytest.raises(ValueError, match="qv_ka_ctx_factor"):
+            ModelConfig(qv_ka_ctx_factor=0)
 
     def test_invalid_position_embedding_rejected_on_init(self):
         with pytest.raises(ValueError, match="Unsupported model.position_embedding"):
@@ -105,7 +112,8 @@ class TestLoadConfig:
                 "n_layers": 6,
                 "d_model": 512,
                 "activation": "gelu",
-                "attention_variant": "qv",
+                "attention_variant": "qv_ka",
+                "qv_ka_ctx_factor": 1,
                 "position_embedding": "learned",
             },
             "train": {"learning_rate": 1e-4, "precision": "fp16"},
@@ -117,7 +125,8 @@ class TestLoadConfig:
         assert cfg.model.n_layers == 6
         assert cfg.model.d_model == 512
         assert cfg.model.activation == "gelu"
-        assert cfg.model.attention_variant == "qv"
+        assert cfg.model.attention_variant == "qv_ka"
+        assert cfg.model.qv_ka_ctx_factor == 1
         assert cfg.model.position_embedding == "learned"
         assert cfg.train.learning_rate == 1e-4
         assert cfg.train.precision == "fp16"
@@ -141,7 +150,8 @@ class TestLoadConfig:
             "train.batch_size": "32",
             "precision": "fp16",
             "activation": "gelu",
-            "attention_variant": "qv",
+            "attention_variant": "qv_ka",
+            "qv_ka_ctx_factor": "1",
             "position_embedding": "learned",
         }
         cfg = load_config(config_path=None, overrides=overrides)
@@ -149,7 +159,8 @@ class TestLoadConfig:
         assert cfg.train.batch_size == 32
         assert cfg.train.precision == "fp16"
         assert cfg.model.activation == "gelu"
-        assert cfg.model.attention_variant == "qv"
+        assert cfg.model.attention_variant == "qv_ka"
+        assert cfg.model.qv_ka_ctx_factor == 1
         assert cfg.model.position_embedding == "learned"
 
     def test_invalid_activation_override_raises(self):
@@ -159,6 +170,10 @@ class TestLoadConfig:
     def test_invalid_attention_variant_override_raises(self):
         with pytest.raises(ValueError, match="Unsupported model.attention_variant"):
             load_config(config_path=None, overrides={"attention_variant": "mla"})
+
+    def test_invalid_qv_ka_ctx_factor_override_raises(self):
+        with pytest.raises(ValueError, match="qv_ka_ctx_factor"):
+            load_config(config_path=None, overrides={"qv_ka_ctx_factor": "0"})
 
     def test_invalid_attention_variant_yaml_raises(self, tmp_path):
         yaml_content = {"model": {"attention_variant": "mla"}}

@@ -52,6 +52,15 @@ class TestGPT:
         ))
         assert not hasattr(model.blocks[0].attn, "k_proj")
 
+    def test_qv_ka_attention_variant_uses_context_projection(self):
+        model = GPT(ModelConfig(
+            n_layers=2, n_heads=4, d_model=64, d_ff=256,
+            vocab_size=100, max_seq_len=32, dropout=0.0,
+            attention_variant="qv_ka", qv_ka_ctx_factor=2,
+        ))
+        assert not hasattr(model.blocks[0].attn, "k_proj")
+        assert hasattr(model.blocks[0].attn, "qv_ka_ctx_proj")
+
     def test_parameter_count_small(self):
         total = sum(p.numel() for p in self.model.parameters())
         assert total > 0

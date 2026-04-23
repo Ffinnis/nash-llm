@@ -17,11 +17,20 @@ class MultiHeadAttention(nn.Module):
         self.head_dim = config.d_model // config.n_heads
         self.attention_variant = config.attention_variant
         self.position_embedding = config.position_embedding
+        self.qv_ka_ctx_factor = config.qv_ka_ctx_factor
 
         self.q_proj = nn.Linear(config.d_model, config.d_model)
         if self.attention_variant == "qkv":
             self.k_proj = nn.Linear(config.d_model, config.d_model)
         self.v_proj = nn.Linear(config.d_model, config.d_model)
+        if self.attention_variant == "qv_ka":
+            self.qv_ka_ctx_dim = self.head_dim * self.qv_ka_ctx_factor
+            self.qv_ka_ctx_proj = nn.Linear(config.d_model, self.n_heads * self.qv_ka_ctx_dim)
+            self.qv_ka_key_weight = nn.Parameter(
+                torch.empty(self.n_heads, self.qv_ka_ctx_dim + self.head_dim, self.head_dim)
+            )
+            self.qv_ka_key_bias = nn.Parameter(torch.zeros(self.n_heads, self.head_dim))
+            nn.init.normal_(self.qv_ka_key_weight, mean=0.0, std=0.02)
         self.out_proj = nn.Linear(config.d_model, config.d_model)
         self.dropout_p = config.dropout
         self.attn_dropout = nn.Dropout(config.dropout)
@@ -63,16 +72,32 @@ class MultiHeadAttention(nn.Module):
         )
         return x_rotated.flatten(-2)
 
+    def _reshape_heads(self, x: torch.Tensor, batch_size: int, seq_len: int, head_dim: int | None = None) -> torch.Tensor:
+        target_head_dim = self.head_dim if head_dim is None else head_dim
+        return x.view(batch_size, seq_len, self.n_heads, target_head_dim).transpose(1, 2)
+
+    def _build_qv_ka_keys(self, x: torch.Tensor, v: torch.Tensor, batch_size: int, seq_len: int) -> torch.Tensor:
+        ctx = self.qv_ka_ctx_proj(x)
+        ctx = self._reshape_heads(ctx, batch_size, seq_len, self.qv_ka_ctx_dim)
+        key_input = torch.cat([ctx, v], dim=-1)
+        attn_k = torch.einsum("bhti,hio->bhto", key_input, self.qv_ka_key_weight)
+        attn_k = attn_k + self.qv_ka_key_bias.view(1, self.n_heads, 1, self.head_dim)
+        return attn_k
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, C = x.shape
 
         q = self.q_proj(x)
         v = self.v_proj(x)
-        attn_k = self.k_proj(x) if self.attention_variant == "qkv" else v
+        q = self._reshape_heads(q, B, T)
+        v = self._reshape_heads(v, B, T)
 
-        q = q.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        v = v.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        attn_k = attn_k.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        if self.attention_variant == "qkv":
+            attn_k = self._reshape_heads(self.k_proj(x), B, T)
+        elif self.attention_variant == "qv":
+            attn_k = v
+        else:
+            attn_k = self._build_qv_ka_keys(x, v, B, T)
 
         if self.position_embedding == "rope":
             q = self._apply_rope(q, T)

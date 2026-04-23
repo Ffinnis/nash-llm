@@ -13,12 +13,14 @@ class ModelConfig:
     dropout: float = 0.1
     activation: str = "swiglu"
     attention_variant: str = "qkv"
+    qv_ka_ctx_factor: int = 2
     position_embedding: str = "rope"
     rope_base: float = 10_000.0
 
     def __post_init__(self):
         self.activation = _validate_model_activation(self.activation)
         self.attention_variant = _validate_model_attention_variant(self.attention_variant)
+        self.qv_ka_ctx_factor = _validate_model_qv_ka_ctx_factor(self.qv_ka_ctx_factor)
         self.position_embedding = _validate_model_position_embedding(self.position_embedding)
         if self.rope_base <= 0:
             raise ValueError(f"model.rope_base must be positive, got {self.rope_base}")
@@ -119,14 +121,22 @@ def _validate_model_position_embedding(value: str) -> str:
 def _validate_model_attention_variant(value: str) -> str:
     if not isinstance(value, str):
         raise ValueError(
-            f"Unsupported model.attention_variant '{value}'. Expected one of: qkv, qv"
+            f"Unsupported model.attention_variant '{value}'. Expected one of: qkv, qv, qv_ka"
         )
     attention_variant = value.lower()
-    if attention_variant not in {"qkv", "qv"}:
+    if attention_variant not in {"qkv", "qv", "qv_ka"}:
         raise ValueError(
-            f"Unsupported model.attention_variant '{value}'. Expected one of: qkv, qv"
+            f"Unsupported model.attention_variant '{value}'. Expected one of: qkv, qv, qv_ka"
         )
     return attention_variant
+
+
+def _validate_model_qv_ka_ctx_factor(value: int) -> int:
+    if not isinstance(value, int):
+        raise ValueError(f"model.qv_ka_ctx_factor must be an integer, got {value}")
+    if value <= 0:
+        raise ValueError(f"model.qv_ka_ctx_factor must be positive, got {value}")
+    return value
 
 
 def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
@@ -156,6 +166,8 @@ def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
             parsed = _validate_model_activation(str(parsed))
         if section_name == "model" and field_name == "attention_variant":
             parsed = _validate_model_attention_variant(str(parsed))
+        if section_name == "model" and field_name == "qv_ka_ctx_factor":
+            parsed = _validate_model_qv_ka_ctx_factor(int(parsed))
         if section_name == "model" and field_name == "position_embedding":
             parsed = _validate_model_position_embedding(str(parsed))
         setattr(section, field_name, parsed)
@@ -171,6 +183,7 @@ def load_config(config_path: str | None = None, overrides: dict[str, str] | None
             cfg.model = ModelConfig(**{**vars(cfg.model), **raw["model"]})
             cfg.model.activation = _validate_model_activation(cfg.model.activation)
             cfg.model.attention_variant = _validate_model_attention_variant(cfg.model.attention_variant)
+            cfg.model.qv_ka_ctx_factor = _validate_model_qv_ka_ctx_factor(cfg.model.qv_ka_ctx_factor)
             cfg.model.position_embedding = _validate_model_position_embedding(cfg.model.position_embedding)
         if "train" in raw:
             cfg.train = TrainConfig(**{**vars(cfg.train), **raw["train"]})

@@ -74,3 +74,33 @@ class TestMultiHeadAttention:
         x = torch.randn(2, 16, 64)
         out = attn(x)
         assert out.shape == (2, 16, 64)
+
+    def test_qv_ka_variant_builds_context_projection(self):
+        attn = MultiHeadAttention(
+            ModelConfig(
+                d_model=64,
+                n_heads=4,
+                max_seq_len=32,
+                dropout=0.0,
+                attention_variant="qv_ka",
+                qv_ka_ctx_factor=2,
+            )
+        )
+        assert hasattr(attn, "qv_ka_ctx_proj")
+        assert hasattr(attn, "qv_ka_key_weight")
+        assert not hasattr(attn, "k_proj")
+
+    def test_qv_ka_variant_preserves_shape(self):
+        attn = MultiHeadAttention(
+            ModelConfig(
+                d_model=64,
+                n_heads=4,
+                max_seq_len=32,
+                dropout=0.0,
+                attention_variant="qv_ka",
+                qv_ka_ctx_factor=2,
+            )
+        )
+        x = torch.randn(2, 16, 64)
+        out = attn(x)
+        assert out.shape == (2, 16, 64)

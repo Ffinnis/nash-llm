@@ -187,6 +187,7 @@ These config files currently exist:
 - `configs/pretrain_small_qv.yaml`
 - `configs/pretrain_100m.yaml`
 - `configs/pretrain_100m_qv_capacity.yaml`
+- `configs/pretrain_100m_qv_ka.yaml`
 - `configs/pretrain_1b.yaml`
 - `configs/pretrain_chinchilla.yaml`
 - `configs/sft.yaml`
@@ -208,6 +209,7 @@ uv run python scripts/train.py --config configs/pretrain_small.yaml
 uv run python scripts/train.py --config configs/pretrain_small_qv.yaml
 uv run python scripts/train.py --config configs/pretrain_100m.yaml
 uv run python scripts/train.py --config configs/pretrain_100m_qv_capacity.yaml
+uv run python scripts/train.py --config configs/pretrain_100m_qv_ka.yaml
 uv run python scripts/train.py --config configs/pretrain_1b.yaml
 uv run python scripts/train.py --config configs/pretrain_chinchilla.yaml
 ```
@@ -228,8 +230,10 @@ uv run python scripts/train.py --config configs/pretrain_small.yaml --attention_
 
 - `qkv`: standard baseline with explicit `q_proj`, `k_proj`, `v_proj`
 - `qv`: experimental variant that removes the explicit `k_proj` and scores attention with `Q @ V_score^T`
+- `qv_ka`: experimental variant that derives per-head keys from a compact context projection plus `V`
 
 In the `qv` variant, TEON is applied only to `q_proj.weight` and `v_proj.weight`.
+In the `qv_ka` variant, TEON also stays on `q_proj.weight` and `v_proj.weight`, while the context/key-builder weights use the non-TEON optimizer path.
 
 `configs/pretrain_100m_qv_capacity.yaml` restores the removed key-projection capacity almost exactly by increasing `d_ff` from `3072` to `3456`.
 

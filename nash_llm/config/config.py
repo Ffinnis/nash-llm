@@ -6,6 +6,7 @@ import yaml
 class ModelConfig:
     n_layers: int = 12
     n_heads: int = 12
+    n_kv_heads: int | None = None
     d_model: int = 768
     d_ff: int = 3072
     vocab_size: int = 50257
@@ -16,6 +17,14 @@ class ModelConfig:
     rope_base: float = 10_000.0
 
     def __post_init__(self):
+        if self.n_kv_heads is None:
+            self.n_kv_heads = self.n_heads
+        if self.n_kv_heads <= 0:
+            raise ValueError(f"model.n_kv_heads must be positive, got {self.n_kv_heads}")
+        if self.n_heads % self.n_kv_heads != 0:
+            raise ValueError(
+                f"model.n_kv_heads ({self.n_kv_heads}) must divide model.n_heads ({self.n_heads})"
+            )
         self.activation = _validate_model_activation(self.activation)
         self.position_embedding = _validate_model_position_embedding(self.position_embedding)
         if self.rope_base <= 0:
@@ -115,6 +124,10 @@ def _validate_model_position_embedding(value: str) -> str:
 
 
 def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
+    original_n_heads = cfg.model.n_heads
+    original_n_kv_heads = cfg.model.n_kv_heads
+    explicit_n_kv_heads_override = False
+
     for key, value in overrides.items():
         parts = key.split(".")
         if len(parts) == 1:
@@ -141,7 +154,18 @@ def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
             parsed = _validate_model_activation(str(parsed))
         if section_name == "model" and field_name == "position_embedding":
             parsed = _validate_model_position_embedding(str(parsed))
+        if section_name == "model" and field_name == "n_kv_heads":
+            explicit_n_kv_heads_override = True
         setattr(section, field_name, parsed)
+
+    if (
+        not explicit_n_kv_heads_override
+        and original_n_kv_heads == original_n_heads
+        and cfg.model.n_kv_heads == original_n_kv_heads
+    ):
+        cfg.model.n_kv_heads = cfg.model.n_heads
+
+    cfg.model = ModelConfig(**vars(cfg.model))
     return cfg
 
 
@@ -151,9 +175,7 @@ def load_config(config_path: str | None = None, overrides: dict[str, str] | None
         with open(config_path) as f:
             raw = yaml.safe_load(f) or {}
         if "model" in raw:
-            cfg.model = ModelConfig(**{**vars(cfg.model), **raw["model"]})
-            cfg.model.activation = _validate_model_activation(cfg.model.activation)
-            cfg.model.position_embedding = _validate_model_position_embedding(cfg.model.position_embedding)
+            cfg.model = ModelConfig(**raw["model"])
         if "train" in raw:
             cfg.train = TrainConfig(**{**vars(cfg.train), **raw["train"]})
             cfg.train.precision = _validate_train_precision(cfg.train.precision)

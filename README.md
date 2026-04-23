@@ -215,7 +215,10 @@ Short keys auto-resolve, so both simple and qualified overrides are supported:
 ```bash
 uv run python scripts/train.py --config configs/pretrain_small.yaml --max_steps 50 --learning_rate 1e-3
 uv run python scripts/train.py --config configs/pretrain_small.yaml --muon_lr 0.03
+uv run python scripts/train.py --config configs/pretrain_small.yaml --n_kv_heads 4
 ```
+
+`model.n_kv_heads` defaults to `model.n_heads`, which keeps standard multi-head attention. Set a smaller value such as `4` or `1` to enable grouped-query attention or multi-query attention.
 
 ### Generate
 

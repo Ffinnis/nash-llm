@@ -186,6 +186,7 @@ These config files currently exist:
 - `configs/pretrain_small.yaml`
 - `configs/pretrain_small_qv.yaml`
 - `configs/pretrain_100m.yaml`
+- `configs/pretrain_100m_qv_capacity.yaml`
 - `configs/pretrain_1b.yaml`
 - `configs/pretrain_chinchilla.yaml`
 - `configs/sft.yaml`
@@ -206,6 +207,7 @@ uv sync --group dev
 uv run python scripts/train.py --config configs/pretrain_small.yaml
 uv run python scripts/train.py --config configs/pretrain_small_qv.yaml
 uv run python scripts/train.py --config configs/pretrain_100m.yaml
+uv run python scripts/train.py --config configs/pretrain_100m_qv_capacity.yaml
 uv run python scripts/train.py --config configs/pretrain_1b.yaml
 uv run python scripts/train.py --config configs/pretrain_chinchilla.yaml
 ```
@@ -228,6 +230,8 @@ uv run python scripts/train.py --config configs/pretrain_small.yaml --attention_
 - `qv`: experimental variant that removes the explicit `k_proj` and scores attention with `Q @ V_score^T`
 
 In the `qv` variant, TEON is applied only to `q_proj.weight` and `v_proj.weight`.
+
+`configs/pretrain_100m_qv_capacity.yaml` restores the removed key-projection capacity almost exactly by increasing `d_ff` from `3072` to `3456`.
 
 ### Generate
 

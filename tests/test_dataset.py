@@ -32,6 +32,18 @@ class TestPretrainDataset:
         assert x[0].item() == tokens[0]
         assert y[0].item() == tokens[1]
 
+    def test_getitem_reads_across_shard_boundary(self, tmp_path):
+        first = np.arange(6, dtype=np.uint16)
+        second = np.arange(6, 12, dtype=np.uint16)
+        first.tofile(str(tmp_path / "train_000.bin"))
+        second.tofile(str(tmp_path / "train_001.bin"))
+
+        ds = PretrainDataset(str(tmp_path), split="train", seq_len=4)
+        x, y = ds[1]
+
+        assert x.tolist() == [4, 5, 6, 7]
+        assert y.tolist() == [5, 6, 7, 8]
+
     def test_dataloader_compatible(self, tmp_path):
         ds = self._make_dataset(tmp_path, n_tokens=1000, seq_len=64)
         loader = torch.utils.data.DataLoader(ds, batch_size=4, shuffle=True)

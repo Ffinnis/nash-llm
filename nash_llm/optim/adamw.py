@@ -12,16 +12,19 @@ def configure_optimizers(
     muon_lr: float = 0.02,
     muon_momentum: float = 0.95,
     ns_steps: int = 5,
+    dion_rank_fraction: float = 0.25,
+    dion_rank_multiple_of: int = 1,
+    dion_power_iters: int = 1,
     betas: tuple[float, float] = (0.9, 0.95),
     fused: bool | None = None,
 ) -> list[torch.optim.Optimizer]:
-    """Create TEON+AdamW optimizer pair.
+    """Create TEON+Dion+AdamW optimizer pair.
 
     Returns [Muon, AdamW]:
-    - Muon: TEON cross-layer Q/K/V stacking (K=2) + per-layer ortho for out_proj, MLP
+    - Muon: TEON cross-layer Q/K/V stacking (K=2) + Dion low-rank updates for out_proj, MLP
     - AdamW: embeddings, normalization params, biases, and remaining params
     """
-    muon_params: list[nn.Parameter] = []  # per-layer ortho (out_proj, MLP)
+    muon_params: list[nn.Parameter] = []  # per-layer Dion (out_proj, MLP)
     teon_groups: list[list[nn.Parameter]] = []  # cross-layer stacking (Q/K/V)
     adamw_decay: list[nn.Parameter] = []
     adamw_no_decay: list[nn.Parameter] = []
@@ -53,7 +56,7 @@ def configure_optimizers(
         for p in params[remainder_start:]:
             muon_params.append(p)
 
-    # Collect MUON per-layer params (out_proj, fc1, fc2) + remaining to AdamW
+    # Collect Dion per-layer params (out_proj, fc1, fc2) + remaining to AdamW
     for name, param in model.named_parameters():
         if not param.requires_grad or id(param) in muon_param_ids:
             continue
@@ -78,6 +81,9 @@ def configure_optimizers(
         momentum=muon_momentum,
         weight_decay=weight_decay,
         ns_steps=ns_steps,
+        dion_rank_fraction=dion_rank_fraction,
+        dion_rank_multiple_of=dion_rank_multiple_of,
+        dion_power_iters=dion_power_iters,
     )
 
     # Build AdamW for remaining params

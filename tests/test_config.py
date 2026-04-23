@@ -61,6 +61,8 @@ class TestTrainConfig:
         assert cfg.muon_lr == 0.02
         assert cfg.muon_momentum == 0.95
         assert cfg.ns_steps == 5
+        assert cfg.dion_rank_fraction == 0.25
+        assert cfg.dion_power_iters == 1
 
     def test_custom(self):
         cfg = TrainConfig(learning_rate=1e-4, batch_size=32)

@@ -23,6 +23,8 @@ train:
   muon_lr: 0.02
   muon_momentum: 0.95
   ns_steps: 5
+  dion_rank_fraction: 0.25
+  dion_power_iters: 1
 
 data:
   dataset: tinystories

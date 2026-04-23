@@ -48,6 +48,8 @@ class TrainConfig:
     muon_lr: float = 0.02
     muon_momentum: float = 0.95
     ns_steps: int = 5
+    dion_rank_fraction: float = 0.25
+    dion_power_iters: int = 1
 
 
 @dataclass

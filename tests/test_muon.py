@@ -89,7 +89,7 @@ class TestMuonOptimizer:
             assert not torch.allclose(orig, updated), "Params should have changed"
 
     def test_muon_momentum_accumulation(self):
-        """Momentum buffer should accumulate across steps."""
+        """Dion momentum buffer should retain error feedback across steps."""
         opt = Muon(
             muon_params=self.params[:1],
             teon_params=[],
@@ -107,6 +107,23 @@ class TestMuonOptimizer:
         buf_after_2 = opt.state[self.params[0]]["momentum_buffer"]
 
         assert not torch.allclose(buf_after_1, buf_after_2)
+
+    def test_dion_initializes_low_rank_q_state(self):
+        """Dion params should keep a low-rank Q basis."""
+        opt = Muon(
+            muon_params=self.params[:1],
+            teon_params=[],
+            lr=0.02,
+            momentum=0.95,
+            dion_rank_fraction=0.25,
+        )
+
+        self.params[0].grad = torch.randn_like(self.params[0])
+        opt.step()
+
+        state = opt.state[self.params[0]]
+        assert state["Q"].shape == (64, 16)
+        assert state["momentum_buffer"].shape == self.params[0].shape
 
 
 class TestTEONStacking:
@@ -133,7 +150,7 @@ class TestTEONStacking:
         assert not torch.allclose(original[1], p2)
 
     def test_teon_stacked_ortho_differs_from_independent(self):
-        """TEON stacking should produce different updates than per-layer MUON."""
+        """TEON stacking should produce different updates than per-layer Dion."""
         torch.manual_seed(42)
         p1 = nn.Parameter(torch.randn(64, 128))
         p2 = nn.Parameter(torch.randn(64, 128))
@@ -148,16 +165,16 @@ class TestTEONStacking:
         p2_teon.grad = g2.clone()
         opt_teon.step()
 
-        # MUON path: orthogonalize independently
-        p1_muon = nn.Parameter(p1.detach().clone())
-        p2_muon = nn.Parameter(p2.detach().clone())
-        opt_muon = Muon(muon_params=[p1_muon, p2_muon], teon_params=[], lr=0.02, momentum=0.0, ns_steps=5)
-        p1_muon.grad = g1.clone()
-        p2_muon.grad = g2.clone()
-        opt_muon.step()
+        # Dion path: low-rank per-parameter updates
+        p1_dion = nn.Parameter(p1.detach().clone())
+        p2_dion = nn.Parameter(p2.detach().clone())
+        opt_dion = Muon(muon_params=[p1_dion, p2_dion], teon_params=[], lr=0.02, momentum=0.0, ns_steps=5)
+        p1_dion.grad = g1.clone()
+        p2_dion.grad = g2.clone()
+        opt_dion.step()
 
         # They should differ because stacking changes the orthogonalization
-        assert not torch.allclose(p1_teon, p1_muon, atol=1e-3), "TEON should differ from MUON"
+        assert not torch.allclose(p1_teon, p1_dion, atol=1e-3), "TEON should differ from Dion"
 
     def test_teon_group_shapes_preserved(self):
         """After TEON step, param shapes should be unchanged."""
@@ -199,7 +216,7 @@ class TestConfigureOptimizers:
         assert model_param_ids == opt_param_ids, "Not all params assigned to an optimizer"
 
     def test_no_param_in_both_optimizers(self):
-        """No param should be in both Muon and AdamW."""
+        """No param should be in both TEON+Dion and AdamW."""
         opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1)
 
         muon_ids = set()

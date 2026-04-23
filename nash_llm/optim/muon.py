@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 from torch.optim import Optimizer
@@ -67,17 +68,91 @@ def orthogonalize(M: torch.Tensor, steps: int = 5) -> torch.Tensor:
     return polar_express(M, steps)
 
 
-class Muon(Optimizer):
-    """MUON/TEON optimizer with Polar Express orthogonalization.
+def _orthonormalize_columns(M: torch.Tensor) -> torch.Tensor:
+    Q, _ = torch.linalg.qr(M.float(), mode="reduced")
+    return Q.to(M.dtype)
+
+
+def _dion_rank(shape: torch.Size, rank_fraction: float, rank_multiple_of: int) -> int:
+    r = rank_fraction * min(shape)
+    r = rank_multiple_of * math.ceil(r / rank_multiple_of)
+    return max(1, min(r, *shape))
+
+
+def _init_dion_state(
+    param: nn.Parameter,
+    state: dict,
+    rank_fraction: float,
+    rank_multiple_of: int,
+) -> None:
+    if "momentum_buffer" not in state:
+        state["momentum_buffer"] = torch.zeros_like(param.data)
+
+    m, n = param.shape
+    is_transposed = m < n
+    r = _dion_rank(param.shape, rank_fraction, rank_multiple_of)
+    q_rows = m if is_transposed else n
+    state["Q"] = torch.randn((q_rows, r), device=param.device, dtype=param.dtype)
+    state["is_transposed"] = is_transposed
+
+
+def _dion_update(
+    param: nn.Parameter,
+    grad: torch.Tensor,
+    state: dict,
+    lr: float,
+    momentum: float,
+    weight_decay: float,
+    eps: float,
+    power_iters: int,
+) -> None:
+    M = state["momentum_buffer"]
+    Q = state["Q"]
+    is_transposed = state["is_transposed"]
+
+    M.add_(grad.to(M.dtype))
+    B = M.mT if is_transposed else M
+
+    P = None
+    R = None
+    for _ in range(power_iters):
+        P = _orthonormalize_columns(B @ Q.to(B.dtype))
+        R = B.mT @ P
+        Q = R / (R.float().norm(dim=0, keepdim=True).add(eps).to(R.dtype))
+
+    assert P is not None and R is not None
+
+    if is_transposed:
+        M.add_(R @ P.mT, alpha=-(1.0 - momentum))
+    else:
+        M.add_(P @ R.mT, alpha=-(1.0 - momentum))
+
+    state["Q"] = Q.to(state["Q"].dtype)
+
+    if weight_decay > 0:
+        param.data.mul_(1.0 - lr * weight_decay)
+
+    scale = (param.shape[0] / param.shape[1]) ** 0.5
+    if is_transposed:
+        update = Q @ P.mT
+    else:
+        update = P @ Q.mT
+    param.data.add_(update.to(param.dtype), alpha=-lr * scale)
+
+
+class TeonDion(Optimizer):
+    """TEON + Dion optimizer.
 
     Handles two types of parameter groups:
-    - muon_params: per-layer orthogonalization (out_proj, MLP weights)
+    - muon_params: per-layer Dion low-rank updates (out_proj, MLP weights)
     - teon_params: cross-layer stacking of K consecutive blocks (Q/K/V)
 
-    Math (MUON per param):
-        M_t = mu * M_{t-1} + (1 - mu) * G_t
-        O_t = Ortho(M_t)
-        W_t = W_{t-1} - lr * sqrt(m/n) * O_t
+    Math (Dion per param):
+        M_t = M_{t-1} + G_t
+        P_t, R_t ~= low_rank(M_t)
+        M_t = M_t - (1 - mu) * P_t R_t^T
+        Q_t = normalize_columns(R_t)
+        W_t = W_{t-1} - lr * sqrt(m/n) * P_t Q_t^T
 
     Math (TEON per group of K params):
         Z = [M^(1) | M^(2) | ... | M^(K)]   (mode-1 matricization)
@@ -94,7 +169,18 @@ class Muon(Optimizer):
         momentum: float = 0.95,
         weight_decay: float = 0.0,
         ns_steps: int = 5,
+        dion_rank_fraction: float = 0.25,
+        dion_rank_multiple_of: int = 1,
+        dion_power_iters: int = 1,
+        eps: float = 1e-8,
     ):
+        if not 0 < dion_rank_fraction <= 1:
+            raise ValueError(f"dion_rank_fraction must be in (0, 1], got {dion_rank_fraction}")
+        if dion_rank_multiple_of <= 0:
+            raise ValueError(f"dion_rank_multiple_of must be positive, got {dion_rank_multiple_of}")
+        if dion_power_iters <= 0:
+            raise ValueError(f"dion_power_iters must be positive, got {dion_power_iters}")
+
         # Flatten all params for Optimizer registration
         all_params: list[nn.Parameter] = []
         all_params.extend(muon_params)
@@ -106,17 +192,16 @@ class Muon(Optimizer):
             momentum=momentum,
             weight_decay=weight_decay,
             ns_steps=ns_steps,
+            dion_rank_fraction=dion_rank_fraction,
+            dion_rank_multiple_of=dion_rank_multiple_of,
+            dion_power_iters=dion_power_iters,
+            eps=eps,
         )
         super().__init__(all_params, defaults)
 
         self._muon_params = muon_params
+        self._dion_params = muon_params
         self._teon_groups = teon_params
-
-        # Pre-group MUON params by shape for batched orthogonalization
-        self._muon_shape_groups: dict[tuple[int, int], list[nn.Parameter]] = {}
-        for p in muon_params:
-            key = (p.shape[0], p.shape[1])
-            self._muon_shape_groups.setdefault(key, []).append(p)
 
         # Pre-group TEON groups by (m, n, K) for batched orthogonalization
         self._teon_shape_groups: dict[tuple[int, int, int], list[list[nn.Parameter]]] = {}
@@ -139,50 +224,40 @@ class Muon(Optimizer):
         mu = self.defaults["momentum"]
         wd = self.defaults["weight_decay"]
         ns_steps = self.defaults["ns_steps"]
+        dion_rank_fraction = self.defaults["dion_rank_fraction"]
+        dion_rank_multiple_of = self.defaults["dion_rank_multiple_of"]
+        dion_power_iters = self.defaults["dion_power_iters"]
+        eps = self.defaults["eps"]
 
-        # --- MUON: batched per-shape orthogonalization ---
-        # Phase 1: update all momentum buffers
-        for param in self._muon_params:
+        # --- Dion: per-layer low-rank update with error feedback ---
+        for param in self._dion_params:
             if param.grad is None:
                 continue
             state = self.state[param]
-            if len(state) == 0:
-                state["momentum_buffer"] = torch.zeros_like(param.data)
-            buf = state["momentum_buffer"]
-            buf.mul_(mu).add_(param.grad, alpha=1.0 - mu)
-
-        # Phase 2: batched orthogonalization by shape
-        for (m, n), params in self._muon_shape_groups.items():
-            if all(p.grad is not None for p in params):
-                # Fast path: all grads present → fixed batch size
-                bufs = torch.stack([self.state[p]["momentum_buffer"] for p in params])
-                ortho = orthogonalize(bufs, ns_steps)
-                scale = (m / n) ** 0.5
-                for i, p in enumerate(params):
-                    if wd > 0:
-                        p.data.mul_(1.0 - lr * wd)
-                    p.data.add_(ortho[i], alpha=-lr * scale)
-            else:
-                # Slow path: per-param fallback (rare, e.g. frozen layers)
-                for p in params:
-                    if p.grad is None:
-                        continue
-                    buf = self.state[p]["momentum_buffer"]
-                    o = orthogonalize(buf, ns_steps)
-                    if wd > 0:
-                        p.data.mul_(1.0 - lr * wd)
-                    p.data.add_(o, alpha=-lr * (m / n) ** 0.5)
+            if len(state) == 0 or "Q" not in state:
+                _init_dion_state(param, state, dion_rank_fraction, dion_rank_multiple_of)
+            _dion_update(
+                param=param,
+                grad=param.grad,
+                state=state,
+                lr=lr,
+                momentum=mu,
+                weight_decay=wd,
+                eps=eps,
+                power_iters=dion_power_iters,
+            )
 
         # --- TEON: batched cross-layer stacking ---
         # Phase 1: update all TEON momentum buffers
         for group in self._teon_groups:
+            if not all(param.grad is not None for param in group):
+                continue
             for param in group:
-                if param.grad is None:
-                    continue
                 state = self.state[param]
                 if len(state) == 0:
                     state["momentum_buffer"] = torch.zeros_like(param.data)
                 buf = state["momentum_buffer"]
+                assert param.grad is not None
                 buf.mul_(mu).add_(param.grad, alpha=1.0 - mu)
 
         # Phase 2: batched orthogonalization by (m, n, K)
@@ -211,15 +286,26 @@ class Muon(Optimizer):
                             param.data.mul_(1.0 - lr * wd)
                         param.data.add_(ortho_slices[i], alpha=-lr * scale)
 
-            # Fallback: per-param MUON for incomplete groups
+            # Fallback: per-param Dion for incomplete groups
             for group in incomplete:
                 for param in group:
                     if param.grad is None:
                         continue
-                    buf = self.state[param]["momentum_buffer"]
-                    o = orthogonalize(buf, ns_steps)
-                    if wd > 0:
-                        param.data.mul_(1.0 - lr * wd)
-                    param.data.add_(o, alpha=-lr * (m / n) ** 0.5)
+                    state = self.state[param]
+                    if "Q" not in state:
+                        _init_dion_state(param, state, dion_rank_fraction, dion_rank_multiple_of)
+                    _dion_update(
+                        param=param,
+                        grad=param.grad,
+                        state=state,
+                        lr=lr,
+                        momentum=mu,
+                        weight_decay=wd,
+                        eps=eps,
+                        power_iters=dion_power_iters,
+                    )
 
         return loss
+
+
+Muon = TeonDion

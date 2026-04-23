@@ -1,4 +1,3 @@
-import inspect
 import math
 import torch
 import torch.nn as nn
@@ -32,12 +31,7 @@ class MultiHeadAttention(nn.Module):
         self.dropout_p = config.dropout
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
-        try:
-            self.sdpa_supports_gqa = "enable_gqa" in inspect.signature(
-                F.scaled_dot_product_attention
-            ).parameters
-        except (TypeError, ValueError):
-            self.sdpa_supports_gqa = False
+        self.sdpa_supports_gqa = self._check_sdpa_gqa_support()
 
         mask = torch.tril(torch.ones(config.max_seq_len, config.max_seq_len))
         self.register_buffer("mask", mask.view(1, 1, config.max_seq_len, config.max_seq_len))
@@ -56,6 +50,17 @@ class MultiHeadAttention(nn.Module):
             freqs = torch.outer(positions, inv_freq)
             self.register_buffer("rope_cos", torch.cos(freqs), persistent=False)
             self.register_buffer("rope_sin", torch.sin(freqs), persistent=False)
+
+    @staticmethod
+    def _check_sdpa_gqa_support() -> bool:
+        try:
+            q = torch.empty(1, 2, 1, 1)
+            k = torch.empty(1, 1, 1, 1)
+            v = torch.empty(1, 1, 1, 1)
+            F.scaled_dot_product_attention(q, k, v, enable_gqa=True)
+        except TypeError:
+            return False
+        return True
 
     def _apply_rope(self, x: torch.Tensor, seq_len: int) -> torch.Tensor:
         if seq_len > self.rope_cos.size(0):

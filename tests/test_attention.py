@@ -32,6 +32,22 @@ class TestMultiHeadAttention:
         with pytest.raises(ValueError):
             MultiHeadAttention(bad_cfg)
 
+    def test_grouped_query_attention_output_shape(self):
+        attn = MultiHeadAttention(ModelConfig(d_model=64, n_heads=4, n_kv_heads=2, max_seq_len=32, dropout=0.0))
+        x = torch.randn(2, 16, 64)
+        out = attn(x)
+        assert out.shape == (2, 16, 64)
+
+    def test_grouped_query_attention_projection_shapes(self):
+        attn = MultiHeadAttention(ModelConfig(d_model=64, n_heads=4, n_kv_heads=2, max_seq_len=32, dropout=0.0))
+        assert attn.q_proj.weight.shape == (64, 64)
+        assert attn.k_proj.weight.shape == (32, 64)
+        assert attn.v_proj.weight.shape == (32, 64)
+
+    def test_grouped_query_attention_requires_divisible_heads(self):
+        with pytest.raises(ValueError, match="must divide model.n_heads"):
+            ModelConfig(d_model=64, n_heads=6, n_kv_heads=4)
+
     def test_rope_buffers_created_by_default(self):
         assert self.attn.position_embedding == "rope"
         assert self.attn.rope_cos.shape == (32, 8)

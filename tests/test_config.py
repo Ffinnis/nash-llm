@@ -8,6 +8,7 @@ class TestModelConfig:
         cfg = ModelConfig()
         assert cfg.n_layers == 12
         assert cfg.n_heads == 12
+        assert cfg.n_kv_heads == 12
         assert cfg.d_model == 768
         assert cfg.d_ff == 3072
         assert cfg.vocab_size == 50257
@@ -22,8 +23,17 @@ class TestModelConfig:
         assert cfg.n_layers == 6
         assert cfg.d_model == 512
         assert cfg.n_heads == 12
+        assert cfg.n_kv_heads == 12
         assert cfg.activation == "gelu"
         assert cfg.position_embedding == "learned"
+
+    def test_n_kv_heads_defaults_to_n_heads(self):
+        cfg = ModelConfig(n_heads=8)
+        assert cfg.n_kv_heads == 8
+
+    def test_invalid_n_kv_heads_rejected_on_init(self):
+        with pytest.raises(ValueError, match="must divide model.n_heads"):
+            ModelConfig(n_heads=8, n_kv_heads=3)
 
     def test_invalid_activation_rejected_on_init(self):
         with pytest.raises(ValueError, match="Unsupported model.activation"):
@@ -105,6 +115,7 @@ class TestLoadConfig:
         assert cfg.model.d_model == 512
         assert cfg.model.activation == "gelu"
         assert cfg.model.position_embedding == "learned"
+        assert cfg.model.n_kv_heads == 12
         assert cfg.train.learning_rate == 1e-4
         assert cfg.train.precision == "fp16"
         assert cfg.model.n_heads == 12
@@ -135,6 +146,16 @@ class TestLoadConfig:
         assert cfg.train.precision == "fp16"
         assert cfg.model.activation == "gelu"
         assert cfg.model.position_embedding == "learned"
+
+    def test_n_heads_override_keeps_default_n_kv_heads_in_sync(self):
+        cfg = load_config(config_path=None, overrides={"n_heads": "8"})
+        assert cfg.model.n_heads == 8
+        assert cfg.model.n_kv_heads == 8
+
+    def test_explicit_n_kv_heads_override_wins(self):
+        cfg = load_config(config_path=None, overrides={"n_heads": "8", "n_kv_heads": "2"})
+        assert cfg.model.n_heads == 8
+        assert cfg.model.n_kv_heads == 2
 
     def test_invalid_activation_override_raises(self):
         with pytest.raises(ValueError, match="Unsupported model.activation"):

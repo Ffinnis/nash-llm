@@ -4,7 +4,7 @@ import torch.nn as nn
 from nash_llm.model import GPT
 from nash_llm.config import ModelConfig
 from nash_llm.optim.muon import _polar_express_impl, orthogonalize, Muon
-from nash_llm.optim.adamw import configure_optimizers
+from nash_llm.optim import Sage, configure_optimizers
 
 
 class TestPolarExpress:
@@ -183,7 +183,7 @@ class TestConfigureOptimizers:
         opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1)
         assert len(opts) == 2
         assert isinstance(opts[0], Muon)
-        assert isinstance(opts[1], torch.optim.AdamW)
+        assert isinstance(opts[1], Sage)
 
     def test_all_params_assigned(self):
         """Every trainable param should belong to exactly one optimizer."""
@@ -199,7 +199,7 @@ class TestConfigureOptimizers:
         assert model_param_ids == opt_param_ids, "Not all params assigned to an optimizer"
 
     def test_no_param_in_both_optimizers(self):
-        """No param should be in both Muon and AdamW."""
+        """No param should be in both Muon and SAGE."""
         opts = configure_optimizers(self.model, lr=3e-4, weight_decay=0.1)
 
         muon_ids = set()
@@ -207,12 +207,12 @@ class TestConfigureOptimizers:
             for p in pg["params"]:
                 muon_ids.add(id(p))
 
-        adamw_ids = set()
+        sage_ids = set()
         for pg in opts[1].param_groups:
             for p in pg["params"]:
-                adamw_ids.add(id(p))
+                sage_ids.add(id(p))
 
-        overlap = muon_ids & adamw_ids
+        overlap = muon_ids & sage_ids
         assert len(overlap) == 0, f"Found {len(overlap)} params in both optimizers"
 
     def test_teon_has_qkv_params(self):

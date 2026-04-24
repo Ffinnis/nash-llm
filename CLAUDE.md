@@ -74,7 +74,7 @@ Decoder-only GPT with pre-RMSNorm, GELU activation, and weight tying (`lm_head.w
 
 `Trainer` orchestrates the loop: AMP autocast (`bf16`/`fp16`), gradient accumulation (`grad_accum_steps`), cosine LR schedule with linear warmup, gradient clipping, periodic eval (val_loss, accuracy, perplexity), checkpointing, and wandb logging.
 
-`configure_optimizers()` creates a [Muon, AdamW] optimizer pair using TEON: cross-layer Q/K/V stacking (K=2) + per-layer MUON (out_proj, MLP) + AdamW (embeddings, normalization params, biases). Polar Express (Amsel et al., 2025) orthogonalization with pre-computed degree-5 coefficients. Attention uses separate `q_proj`, `k_proj`, `v_proj` projections. Config fields: `muon_lr` (default 0.02), `muon_momentum` (0.95), `ns_steps` (5).
+`configure_optimizers()` creates a [Muon, SAGE] optimizer pair using TEON: cross-layer Q/K/V stacking (K=2) + per-layer MUON (out_proj, MLP) + SAGE (embeddings, normalization params, biases, and remaining params). Polar Express (Amsel et al., 2025) orthogonalization with pre-computed degree-5 coefficients. Attention uses separate `q_proj`, `k_proj`, `v_proj` projections. Config fields: `muon_lr` (default 0.02), `muon_momentum` (0.95), `ns_steps` (5), `sage_beta1` (0.9), `sage_beta2` (0.99), `sage_eps` (1e-8).
 
 ### Rules
 

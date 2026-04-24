@@ -48,6 +48,9 @@ class TrainConfig:
     muon_lr: float = 0.02
     muon_momentum: float = 0.95
     ns_steps: int = 5
+    sage_beta1: float = 0.9
+    sage_beta2: float = 0.99
+    sage_eps: float = 1e-8
 
 
 @dataclass

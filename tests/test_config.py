@@ -64,7 +64,6 @@ class TestTrainConfig:
         assert cfg.sage_beta1 == 0.9
         assert cfg.sage_beta2 == 0.99
         assert cfg.sage_eps == 1e-8
-        assert cfg.sage_fused is True
 
     def test_custom(self):
         cfg = TrainConfig(learning_rate=1e-4, batch_size=32)
@@ -202,18 +201,10 @@ class TestLoadConfig:
         assert cfg.train.muon_lr == 0.03
 
     def test_sage_hparams_yaml(self, tmp_path):
-        yaml_content = {
-            "train": {
-                "sage_beta1": 0.85,
-                "sage_beta2": 0.995,
-                "sage_eps": 1e-7,
-                "sage_fused": False,
-            }
-        }
+        yaml_content = {"train": {"sage_beta1": 0.85, "sage_beta2": 0.995, "sage_eps": 1e-7}}
         yaml_path = tmp_path / "test.yaml"
         yaml_path.write_text(yaml.dump(yaml_content))
         cfg = load_config(str(yaml_path))
         assert cfg.train.sage_beta1 == 0.85
         assert cfg.train.sage_beta2 == 0.995
         assert cfg.train.sage_eps == 1e-7
-        assert cfg.train.sage_fused is False

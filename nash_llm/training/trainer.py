@@ -79,7 +79,6 @@ class Trainer:
             ns_steps=config.train.ns_steps,
             sage_betas=(config.train.sage_beta1, config.train.sage_beta2),
             sage_eps=config.train.sage_eps,
-            sage_fused=config.train.sage_fused,
         )
         # Keep self.optimizer pointing to the first optimizer for backward compat
         self.optimizer = self.optimizers[0]

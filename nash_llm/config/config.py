@@ -51,7 +51,6 @@ class TrainConfig:
     sage_beta1: float = 0.9
     sage_beta2: float = 0.99
     sage_eps: float = 1e-8
-    sage_fused: bool = True
 
 
 @dataclass

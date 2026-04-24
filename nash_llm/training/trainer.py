@@ -70,8 +70,6 @@ class Trainer:
 
         self.model: GPT = GPT(config.model).to(self.device)
 
-        # Fused AdamW can be numerically brittle in some bf16 stacks; keep it for fp16 path only.
-        use_fused_adamw = self.device.type == "cuda" and config.train.precision == "fp16"
         self.optimizers = configure_optimizers(
             self.model,
             lr=config.train.learning_rate,
@@ -79,7 +77,8 @@ class Trainer:
             muon_lr=config.train.muon_lr,
             muon_momentum=config.train.muon_momentum,
             ns_steps=config.train.ns_steps,
-            fused=use_fused_adamw,
+            sage_betas=(config.train.sage_beta1, config.train.sage_beta2),
+            sage_eps=config.train.sage_eps,
         )
         # Keep self.optimizer pointing to the first optimizer for backward compat
         self.optimizer = self.optimizers[0]
@@ -142,7 +141,7 @@ class Trainer:
 
     def _set_lr(self, step: int):
         lr = self.scheduler.get_lr(step)
-        # Muon optimizer is first, AdamW is second
+        # Muon optimizer is first, SAGE is second
         muon_lr = self.muon_scheduler.get_lr(step)
         for pg in self.optimizers[0].param_groups:
             pg["lr"] = muon_lr

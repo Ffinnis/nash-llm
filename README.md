@@ -247,7 +247,7 @@ nash_llm/
   data/          Tokenizer and dataset loaders
   eval/          Evaluation and text generation helpers
   model/         GPT model, attention, and layers
-  optim/         Muon and AdamW optimizer setup
+  optim/         Muon/TEON and SAGE optimizer setup
   training/      Trainer, scheduler, checkpoints
 scripts/
   prepare_data.py

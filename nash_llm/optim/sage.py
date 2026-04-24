@@ -93,7 +93,9 @@ class Sage(Optimizer):
                 instant_damper = s_t_rms / (s_t + eps)
                 final_scale = torch.minimum(step_scale, instant_damper)
 
-                update = exp_avg.clone().mul_(beta1).add_(grad, alpha=1.0 - beta1).sign_()
+                update = torch.empty_like(param, memory_format=torch.preserve_format)
+                torch.mul(exp_avg, beta1, out=update)
+                update.add_(grad, alpha=1.0 - beta1).sign_()
                 update.mul_(final_scale)
                 param.add_(update, alpha=-lr)
 

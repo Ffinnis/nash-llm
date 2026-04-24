@@ -4,6 +4,98 @@ from torch.optim import Optimizer
 
 from nash_llm.optim.muon import Muon
 
+try:
+    import triton
+    import triton.language as tl
+except ImportError:  # pragma: no cover - Triton is Linux/CUDA-only in most local dev envs.
+    triton = None
+    tl = None
+
+
+if triton is not None:
+
+    @triton.jit
+    def _sage_update_kernel(
+        param_ptr,
+        grad_ptr,
+        exp_avg_ptr,
+        scale_ptr,
+        n_elements: tl.constexpr,
+        n_cols: tl.constexpr,
+        lr,
+        weight_decay,
+        beta1,
+        beta2,
+        block_size: tl.constexpr,
+    ):
+        offsets = tl.program_id(0) * block_size + tl.arange(0, block_size)
+        mask = offsets < n_elements
+
+        param = tl.load(param_ptr + offsets, mask=mask).to(tl.float32)
+        grad = tl.load(grad_ptr + offsets, mask=mask).to(tl.float32)
+        exp_avg = tl.load(exp_avg_ptr + offsets, mask=mask).to(tl.float32)
+        scale = tl.load(scale_ptr + (offsets % n_cols), mask=mask).to(tl.float32)
+
+        param = param * (1.0 - lr * weight_decay)
+        direction = exp_avg * beta1 + grad * (1.0 - beta1)
+        signed = tl.where(direction > 0.0, 1.0, tl.where(direction < 0.0, -1.0, 0.0))
+        param = param - lr * signed * scale
+        exp_avg = exp_avg * beta2 + grad * (1.0 - beta2)
+
+        tl.store(param_ptr + offsets, param, mask=mask)
+        tl.store(exp_avg_ptr + offsets, exp_avg, mask=mask)
+else:
+    _sage_update_kernel = None
+
+
+def _can_use_fused_update(
+    param: torch.Tensor,
+    grad: torch.Tensor,
+    exp_avg: torch.Tensor,
+    final_scale: torch.Tensor,
+) -> bool:
+    return (
+        _sage_update_kernel is not None
+        and param.is_cuda
+        and grad.is_cuda
+        and exp_avg.is_cuda
+        and final_scale.is_cuda
+        and param.is_contiguous()
+        and grad.is_contiguous()
+        and exp_avg.is_contiguous()
+        and final_scale.is_contiguous()
+    )
+
+
+def _fused_sage_update(
+    param: torch.Tensor,
+    grad: torch.Tensor,
+    exp_avg: torch.Tensor,
+    final_scale: torch.Tensor,
+    lr: float,
+    weight_decay: float,
+    beta1: float,
+    beta2: float,
+) -> None:
+    assert _sage_update_kernel is not None
+    n_elements = param.numel()
+    n_cols = param.shape[-1] if param.ndim > 1 else n_elements
+    block_size = 256
+    grid = (triton.cdiv(n_elements, block_size),)
+    _sage_update_kernel[grid](
+        param,
+        grad,
+        exp_avg,
+        final_scale,
+        n_elements,
+        n_cols,
+        lr,
+        weight_decay,
+        beta1,
+        beta2,
+        block_size,
+    )
+
 
 class Sage(Optimizer):
     """SAGE optimizer for embeddings and 1D parameters.
@@ -20,6 +112,7 @@ class Sage(Optimizer):
         betas: tuple[float, float] = (0.9, 0.99),
         eps: float = 1e-8,
         weight_decay: float = 0.0,
+        fused: bool = True,
     ):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -33,7 +126,7 @@ class Sage(Optimizer):
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
 
-        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, fused=fused)
         super().__init__(params, defaults)
 
     @torch.no_grad()
@@ -48,6 +141,7 @@ class Sage(Optimizer):
             beta1, beta2 = group["betas"]
             eps = group["eps"]
             weight_decay = group["weight_decay"]
+            fused = group["fused"]
 
             for param in group["params"]:
                 grad = param.grad
@@ -72,9 +166,6 @@ class Sage(Optimizer):
                 exp_avg = state["exp_avg"]
                 s_avg = state["s_avg"]
 
-                if weight_decay != 0.0:
-                    param.mul_(1.0 - lr * weight_decay)
-
                 grad_abs = grad.abs()
                 if param.ndim > 1:
                     s_t = grad_abs.mean(dim=0, keepdim=True)
@@ -93,11 +184,15 @@ class Sage(Optimizer):
                 instant_damper = s_t_rms / (s_t + eps)
                 final_scale = torch.minimum(step_scale, instant_damper)
 
-                update = exp_avg.clone().mul_(beta1).add_(grad, alpha=1.0 - beta1).sign_()
-                update.mul_(final_scale)
-                param.add_(update, alpha=-lr)
-
-                exp_avg.mul_(beta2).add_(grad, alpha=1.0 - beta2)
+                if fused and _can_use_fused_update(param, grad, exp_avg, final_scale):
+                    _fused_sage_update(param, grad, exp_avg, final_scale, lr, weight_decay, beta1, beta2)
+                else:
+                    if weight_decay != 0.0:
+                        param.mul_(1.0 - lr * weight_decay)
+                    update = exp_avg.clone().mul_(beta1).add_(grad, alpha=1.0 - beta1).sign_()
+                    update.mul_(final_scale)
+                    param.add_(update, alpha=-lr)
+                    exp_avg.mul_(beta2).add_(grad, alpha=1.0 - beta2)
 
         return loss
 
@@ -111,6 +206,7 @@ def configure_optimizers(
     ns_steps: int = 5,
     sage_betas: tuple[float, float] = (0.9, 0.99),
     sage_eps: float = 1e-8,
+    sage_fused: bool = True,
 ) -> list[torch.optim.Optimizer]:
     """Create the optimizer pair used for training.
 
@@ -181,6 +277,6 @@ def configure_optimizers(
     if sage_no_decay:
         sage_groups.append({"params": sage_no_decay, "weight_decay": 0.0})
 
-    sage_opt = Sage(sage_groups, lr=lr, betas=sage_betas, eps=sage_eps)
+    sage_opt = Sage(sage_groups, lr=lr, betas=sage_betas, eps=sage_eps, fused=sage_fused)
 
     return [muon_opt, sage_opt]

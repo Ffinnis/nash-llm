@@ -20,7 +20,6 @@ class Sage(Optimizer):
         betas: tuple[float, float] = (0.9, 0.99),
         eps: float = 1e-8,
         weight_decay: float = 0.0,
-        damper_update_interval: int = 1,
     ):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -33,16 +32,8 @@ class Sage(Optimizer):
             raise ValueError(f"Invalid beta parameter at index 1: {beta2}")
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
-        if damper_update_interval < 1:
-            raise ValueError(f"Invalid damper_update_interval value: {damper_update_interval}")
 
-        defaults = dict(
-            lr=lr,
-            betas=betas,
-            eps=eps,
-            weight_decay=weight_decay,
-            damper_update_interval=damper_update_interval,
-        )
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
         super().__init__(params, defaults)
 
     @torch.no_grad()
@@ -57,7 +48,6 @@ class Sage(Optimizer):
             beta1, beta2 = group["betas"]
             eps = group["eps"]
             weight_decay = group["weight_decay"]
-            damper_update_interval = group["damper_update_interval"]
 
             for param in group["params"]:
                 grad = param.grad
@@ -77,40 +67,31 @@ class Sage(Optimizer):
                         )
                     else:
                         state["s_avg"] = torch.zeros_like(param, memory_format=torch.preserve_format)
-                    state["final_scale"] = torch.ones_like(
-                        state["s_avg"],
-                        memory_format=torch.preserve_format,
-                    )
 
                 state["step"] += 1
                 exp_avg = state["exp_avg"]
                 s_avg = state["s_avg"]
-                final_scale = state["final_scale"]
 
                 if weight_decay != 0.0:
                     param.mul_(1.0 - lr * weight_decay)
 
-                should_refresh_damper = (
-                    state["step"] == 1 or (state["step"] - 1) % damper_update_interval == 0
-                )
-                if should_refresh_damper:
-                    grad_abs = grad.abs()
-                    if param.ndim > 1:
-                        s_t = grad_abs.mean(dim=0, keepdim=True)
-                    else:
-                        s_t = grad_abs
+                grad_abs = grad.abs()
+                if param.ndim > 1:
+                    s_t = grad_abs.mean(dim=0, keepdim=True)
+                else:
+                    s_t = grad_abs
 
-                    s_avg.mul_(beta2).add_(s_t, alpha=1.0 - beta2)
-                    bias_correction2 = 1.0 - beta2 ** state["step"]
-                    s_avg_corrected = s_avg / bias_correction2
+                s_avg.mul_(beta2).add_(s_t, alpha=1.0 - beta2)
+                bias_correction2 = 1.0 - beta2 ** state["step"]
+                s_avg_corrected = s_avg / bias_correction2
 
-                    s_rms = torch.sqrt(torch.mean(s_avg_corrected.square()))
-                    ema_damper = s_rms / (s_avg_corrected + eps)
-                    final_scale.copy_(torch.clamp(ema_damper, max=1.0))
+                s_rms = torch.sqrt(torch.mean(s_avg_corrected.square()))
+                ema_damper = s_rms / (s_avg_corrected + eps)
+                step_scale = torch.clamp(ema_damper, max=1.0)
 
-                    s_t_rms = torch.sqrt(torch.mean(s_t.square()))
-                    instant_damper = s_t_rms / (s_t + eps)
-                    final_scale.copy_(torch.minimum(final_scale, instant_damper))
+                s_t_rms = torch.sqrt(torch.mean(s_t.square()))
+                instant_damper = s_t_rms / (s_t + eps)
+                final_scale = torch.minimum(step_scale, instant_damper)
 
                 update = torch.empty_like(param, memory_format=torch.preserve_format)
                 torch.mul(exp_avg, beta1, out=update)
@@ -132,7 +113,6 @@ def configure_optimizers(
     ns_steps: int = 5,
     sage_betas: tuple[float, float] = (0.9, 0.99),
     sage_eps: float = 1e-8,
-    sage_damper_update_interval: int = 1,
 ) -> list[torch.optim.Optimizer]:
     """Create the optimizer pair used for training.
 
@@ -203,12 +183,6 @@ def configure_optimizers(
     if sage_no_decay:
         sage_groups.append({"params": sage_no_decay, "weight_decay": 0.0})
 
-    sage_opt = Sage(
-        sage_groups,
-        lr=lr,
-        betas=sage_betas,
-        eps=sage_eps,
-        damper_update_interval=sage_damper_update_interval,
-    )
+    sage_opt = Sage(sage_groups, lr=lr, betas=sage_betas, eps=sage_eps)
 
     return [muon_opt, sage_opt]

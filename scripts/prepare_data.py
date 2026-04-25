@@ -31,6 +31,48 @@ def resolve_token_dtype(tokenizer: Tokenizer, requested_dtype: str) -> np.dtype:
     return np.dtype(np.uint32)
 
 
+def load_streaming_dataset(dataset_key: str):
+    from datasets import load_dataset
+
+    config = DATASET_CONFIGS[dataset_key]
+    load_kwargs = {"path": config["hf_path"], "split": config["split"], "streaming": True}
+    if "name" in config:
+        load_kwargs["name"] = config["name"]
+    return load_dataset(**load_kwargs)
+
+
+def calibrate_dataset(dataset_key: str, max_docs: int, max_gpt_tokens: int):
+    byte_tokenizer = Tokenizer(representation="bytes")
+    gpt_tokenizer = Tokenizer(representation="tiktoken", encoding_name="gpt2")
+    ds = load_streaming_dataset(dataset_key)
+
+    docs = 0
+    total_bytes = 0
+    total_gpt_tokens = 0
+    for example in ds:
+        text = example.get("text", "")
+        if not text:
+            continue
+        docs += 1
+        total_bytes += len(byte_tokenizer.encode(text)) + 1
+        total_gpt_tokens += len(gpt_tokenizer.encode(text)) + 1
+        if docs >= max_docs or total_gpt_tokens >= max_gpt_tokens:
+            break
+
+    if total_gpt_tokens == 0:
+        raise RuntimeError(f"No text examples found while calibrating {dataset_key}")
+
+    bytes_per_gpt_token = total_bytes / total_gpt_tokens
+    print(f"dataset: {dataset_key}")
+    print(f"docs: {docs:,}")
+    print(f"bytes: {total_bytes:,}")
+    print(f"gpt2_tokens: {total_gpt_tokens:,}")
+    print(f"bytes_per_gpt2_token: {bytes_per_gpt_token:.4f}")
+    for token_budget in (10_000_000, 100_000_000, 1_000_000_000, 2_500_000_000):
+        byte_budget = round(token_budget * bytes_per_gpt_token)
+        print(f"{token_budget:,} gpt2-token-equivalent ~= {byte_budget:,} bytes")
+
+
 def tokenize_dataset(
     dataset_key: str,
     output_dir: str,
@@ -39,7 +81,6 @@ def tokenize_dataset(
     tokenizer_encoding: str = "gpt2",
     token_dtype: str = "auto",
 ):
-    from datasets import load_dataset
     config = DATASET_CONFIGS[dataset_key]
     tokenizer = Tokenizer(representation=representation, encoding_name=tokenizer_encoding)
     dtype = resolve_token_dtype(tokenizer, token_dtype)
@@ -47,10 +88,7 @@ def tokenize_dataset(
     out_path.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading dataset: {config['hf_path']}")
-    load_kwargs = {"path": config["hf_path"], "split": config["split"], "streaming": True}
-    if "name" in config:
-        load_kwargs["name"] = config["name"]
-    ds = load_dataset(**load_kwargs)
+    ds = load_streaming_dataset(dataset_key)
 
     max_tokens = config["max_tokens"]
     all_tokens = []
@@ -110,7 +148,13 @@ def main():
     parser.add_argument("--representation", type=str, default="bytes", choices=["bytes", "tiktoken"])
     parser.add_argument("--tokenizer_encoding", type=str, default="gpt2")
     parser.add_argument("--token_dtype", type=str, default="auto", choices=["auto", "uint8", "uint16", "uint32"])
+    parser.add_argument("--calibrate", action="store_true", help="Measure bytes per GPT-2 token and exit")
+    parser.add_argument("--calibrate_docs", type=int, default=10_000)
+    parser.add_argument("--calibrate_gpt_tokens", type=int, default=5_000_000)
     args = parser.parse_args()
+    if args.calibrate:
+        calibrate_dataset(args.dataset, args.calibrate_docs, args.calibrate_gpt_tokens)
+        return
     tokenize_dataset(
         args.dataset,
         args.output,

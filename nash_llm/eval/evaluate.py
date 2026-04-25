@@ -33,7 +33,12 @@ def compute_accuracy(model: nn.Module, val_loader: DataLoader, max_batches: int 
         if max_batches is not None and i >= max_batches:
             break
         x, y = x.to(device), y.to(device)
-        logits = model(x)
+        if getattr(model.config, "byte_patch_size", 1) > 1:
+            logits, _ = model(x, y)
+            sequence = torch.cat([x[:, :1], y], dim=1)
+            y = sequence[:, : logits.size(1)]
+        else:
+            logits = model(x)
         preds = logits.argmax(dim=-1)
         correct += (preds == y).sum().item()
         total += y.numel()

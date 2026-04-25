@@ -28,13 +28,13 @@ uv run python scripts/prepare_data.py --dataset fineweb_1B
 uv run python scripts/prepare_data.py --dataset fineweb_2_5B
 
 # Train
-# pretrain_small.yaml: 88.6M patched byte-level model on 10M GPT2-token-equivalent data
+# pretrain_small.yaml: 104M MEGABYTE-style byte-level model on 10M GPT2-token-equivalent data
 uv run python scripts/train.py --config configs/pretrain_small.yaml
 # pretrain_100m.yaml: same model on 100M GPT2-token-equivalent data
 uv run python scripts/train.py --config configs/pretrain_100m.yaml
-# pretrain_1b.yaml: 88.6M patched byte-level model on 1B GPT2-token-equivalent fineweb data
+# pretrain_1b.yaml: 104M MEGABYTE-style byte-level model on 1B GPT2-token-equivalent fineweb data
 uv run python scripts/train.py --config configs/pretrain_1b.yaml
-# pretrain_chinchilla.yaml: 88.6M patched byte-level model on 2.5B GPT2-token-equivalent data
+# pretrain_chinchilla.yaml: 104M MEGABYTE-style byte-level model on 2.5B GPT2-token-equivalent data
 uv run python scripts/train.py --config configs/pretrain_chinchilla.yaml
 # pretrain_debug.yaml: tiny debug preset
 uv run python scripts/train.py --config configs/pretrain_debug.yaml
@@ -62,7 +62,7 @@ uv run python scripts/compare_runs.py --run_ids <id1> <id2>
 
 ### Model
 
-Decoder-only GPT with pre-RMSNorm, GELU activation, and weight tying (`lm_head.weight = token_emb.weight`) when `byte_patch_size=1`. The patched byte-level default config is 12 layers, 12 heads, 768 d_model, `vocab_size=259`, `byte_patch_size=4`, and 88,602,624 params. The causal mask is registered as a buffer in `MultiHeadAttention`.
+Decoder-only GPT with pre-RMSNorm, GELU activation, and weight tying (`lm_head.weight = token_emb.weight`) when `byte_patch_size=1`. The MEGABYTE-style byte-level default config is 12 global layers, 2 local byte-decoder layers, 12 heads, 768 d_model, `vocab_size=259`, `byte_patch_size=4`, and 104,350,976 params. The causal mask is registered as a buffer in `MultiHeadAttention`.
 
 `GPT.forward(idx, targets)` returns logits when targets is None, or `(logits, loss)` when targets are provided.
 

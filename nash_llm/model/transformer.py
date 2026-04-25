@@ -35,6 +35,8 @@ class GPT(nn.Module):
         self.patch_proj = None
         if self.byte_patch_size > 1:
             self.patch_proj = nn.Linear(config.d_model * self.byte_patch_size, config.d_model)
+            self.global_patch_pad = nn.Parameter(torch.zeros(1, 1, config.d_model * self.byte_patch_size))
+            self.global_to_local = nn.Linear(config.d_model, config.d_model * self.byte_patch_size)
         self.pos_emb = None
         if config.position_embedding == "learned":
             self.pos_emb = nn.Embedding(config.max_seq_len, config.d_model)
@@ -49,8 +51,12 @@ class GPT(nn.Module):
         self.patch_head = None
         if self.byte_patch_size > 1:
             self.patch_byte_pos_emb = nn.Embedding(self.byte_patch_size, config.d_model)
-            self.local_byte_proj = nn.Linear(config.d_model * 2, config.d_model)
+            self.local_blocks = nn.ModuleList([
+                TransformerBlock(config) for _ in range(config.byte_local_layers)
+            ])
+            self.local_ln_f = nn.RMSNorm(config.d_model, eps=1e-5)
             self.patch_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+            self.patch_head.weight = self.token_emb.weight
         else:
             self.lm_head.weight = self.token_emb.weight
 
@@ -111,55 +117,105 @@ class GPT(nn.Module):
 
         P = self.byte_patch_size
         if targets is not None:
-            sequence = torch.cat([idx, targets[:, -1:]], dim=1)
+            sequence = torch.cat([idx[:, :1], targets], dim=1)
             n_patches = sequence.size(1) // P
-            if n_patches < 2:
-                raise ValueError(
-                    f"byte_patch_size={P} requires at least {2 * P - 1} byte ids for training"
-                )
-            input_patches = sequence[:, : (n_patches - 1) * P].reshape(B, n_patches - 1, P)
-            target_patches = sequence[:, P : n_patches * P].reshape(B, n_patches - 1, P)
+            if n_patches < 1:
+                raise ValueError(f"byte_patch_size={P} requires at least {P} byte ids for training")
+            target_patches = sequence[:, : n_patches * P].reshape(B, n_patches, P)
+            global_states = self._encode_global_patches(sequence, n_patches)
         else:
             n_patches = T // P
             if n_patches < 1:
                 raise ValueError(f"byte_patch_size={P} requires at least {P} byte ids")
-            input_patches = idx[:, : n_patches * P].reshape(B, n_patches, P)
             target_patches = None
+            global_states = self._encode_global_patches(idx, n_patches)
 
-        patch_emb = self.token_emb(input_patches).reshape(B, input_patches.size(1), P * self.config.d_model)
-        x = self.patch_proj(patch_emb)
-        x = self._run_blocks(x)
-        logits = self._decode_patch_bytes(x, target_patches)
-
+        logits = self._decode_patch_bytes(global_states, target_patches)
         if target_patches is None:
-            return logits
+            return logits[:, : n_patches * P]
 
+        target_flat = target_patches.reshape(B, n_patches * P)
+        logits = logits[:, : target_flat.size(1)]
         loss = nn.functional.cross_entropy(
             logits.float().view(-1, logits.size(-1)),
-            target_patches.reshape(-1),
+            target_flat.reshape(-1),
         )
         return logits, loss
+
+    def _encode_global_patches(self, sequence: torch.Tensor, n_patches: int) -> torch.Tensor:
+        assert self.patch_proj is not None
+        B = sequence.size(0)
+        P = self.byte_patch_size
+        D = self.config.d_model
+        if n_patches <= 0:
+            raise ValueError("n_patches must be positive")
+        if n_patches == 1:
+            global_input = self.global_patch_pad.expand(B, 1, P * D)
+        else:
+            previous_patches = sequence[:, : (n_patches - 1) * P].reshape(B, n_patches - 1, P)
+            previous_emb = self.token_emb(previous_patches).reshape(B, n_patches - 1, P * D)
+            global_input = torch.cat(
+                [self.global_patch_pad.expand(B, 1, P * D), previous_emb],
+                dim=1,
+            )
+        x = self.patch_proj(global_input)
+        return self._run_blocks(x)
+
+    def _encode_next_patch_context(self, sequence: torch.Tensor) -> torch.Tensor:
+        assert self.patch_proj is not None
+        B = sequence.size(0)
+        P = self.byte_patch_size
+        D = self.config.d_model
+        n_patches = sequence.size(1) // P
+        if n_patches < 1:
+            global_input = self.global_patch_pad.expand(B, 1, P * D)
+        else:
+            patches = sequence[:, : n_patches * P].reshape(B, n_patches, P)
+            patch_emb = self.token_emb(patches).reshape(B, n_patches, P * D)
+            global_input = torch.cat(
+                [self.global_patch_pad.expand(B, 1, P * D), patch_emb],
+                dim=1,
+            )
+        x = self.patch_proj(global_input)
+        return self._run_blocks(x)[:, -1:]
+
+    def _build_local_inputs(
+        self,
+        patch_states: torch.Tensor,
+        target_patches: torch.Tensor | None,
+        generated_prefix: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        B, N, C = patch_states.shape
+        P = self.byte_patch_size
+        if target_patches is not None:
+            bos = torch.zeros((B, N, 1), dtype=torch.long, device=target_patches.device)
+            prev_tokens = torch.cat([bos, target_patches[:, :, :-1]], dim=2)
+        else:
+            prev_tokens = torch.zeros((B, N, P), dtype=torch.long, device=patch_states.device)
+            if generated_prefix is not None and generated_prefix.numel() > 0:
+                prefix_len = min(generated_prefix.size(1), P - 1)
+                prev_tokens[:, :, 1 : prefix_len + 1] = generated_prefix[:, None, :prefix_len]
+        prev_emb = self.token_emb(prev_tokens)
+        positions = torch.arange(P, device=patch_states.device)
+        prev_emb = prev_emb + self.patch_byte_pos_emb(positions).view(1, 1, P, C)
+        patch_context = self.global_to_local(patch_states).reshape(B, N, P, C)
+        return patch_context + prev_emb
 
     def _decode_patch_bytes(
         self,
         patch_states: torch.Tensor,
         target_patches: torch.Tensor | None,
+        generated_prefix: torch.Tensor | None = None,
     ) -> torch.Tensor:
         assert self.patch_head is not None
-        assert self.local_byte_proj is not None
         B, N, C = patch_states.shape
         P = self.byte_patch_size
-        if target_patches is None:
-            prev_tokens = torch.zeros((B, N, P), dtype=torch.long, device=patch_states.device)
-        else:
-            bos = torch.zeros((B, N, 1), dtype=torch.long, device=target_patches.device)
-            prev_tokens = torch.cat([bos, target_patches[:, :, :-1]], dim=2)
-
-        prev_emb = self.token_emb(prev_tokens)
-        positions = torch.arange(P, device=patch_states.device)
-        prev_emb = prev_emb + self.patch_byte_pos_emb(positions).view(1, 1, P, C)
-        patch_context = patch_states.unsqueeze(2).expand(B, N, P, C)
-        local_hidden = self.local_byte_proj(torch.cat([patch_context, prev_emb], dim=-1))
+        local_hidden = self._build_local_inputs(patch_states, target_patches, generated_prefix)
+        local_hidden = local_hidden.reshape(B * N, P, C)
+        local_hidden = self.drop(local_hidden)
+        for block in self.local_blocks:
+            local_hidden = block(local_hidden)
+        local_hidden = self.local_ln_f(local_hidden)
         logits = self.patch_head(local_hidden)
         return logits.reshape(B, N * P, self.config.vocab_size)
 
@@ -204,10 +260,16 @@ class GPT(nn.Module):
             trim = idx_cond.size(1) % P
             if trim:
                 idx_cond = idx_cond[:, trim:]
-            logits = self(idx_cond)
+            patch_state = self._encode_next_patch_context(idx_cond)
             next_patch = []
             for local_index in range(P):
-                token_logits = logits[:, -P + local_index, :] / temperature
+                prefix = torch.cat(next_patch, dim=-1) if next_patch else None
+                logits = self._decode_patch_bytes(
+                    patch_state,
+                    target_patches=None,
+                    generated_prefix=prefix,
+                )
+                token_logits = logits[:, local_index, :] / temperature
                 if top_k is not None:
                     v, _ = torch.topk(token_logits, min(top_k, token_logits.size(-1)))
                     token_logits = token_logits.masked_fill(

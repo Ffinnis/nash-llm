@@ -14,7 +14,7 @@ class TestGPT:
     def test_logits_shape(self):
         x = torch.randint(0, 100, (2, 16))
         logits = self.model(x)
-        assert logits.shape == (2, 12, 100)
+        assert logits.shape == (2, 16, 100)
 
     def test_uses_rmsnorm_everywhere(self):
         assert isinstance(self.model.ln_f, torch.nn.RMSNorm)

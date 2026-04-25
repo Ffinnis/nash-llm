@@ -264,6 +264,7 @@ configs/
 
 ## Notes
 
+- Default patched byte-level 12L/768d configs are 88,602,624 parameters with `byte_patch_size=4`.
 - Representation: tokenizer-free UTF-8 bytes by default (`vocab_size=259`: 256 byte ids plus EOS/PAD/BOS)
 - Legacy GPT-2 `tiktoken` is still available with `--representation tiktoken`
 - Encoded datasets are written under `datasets/`

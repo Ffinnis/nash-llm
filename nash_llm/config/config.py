@@ -15,6 +15,7 @@ class ModelConfig:
     activation: str = "swiglu"
     position_embedding: str = "rope"
     rope_base: float = 10_000.0
+    byte_patch_size: int = 1
 
     def __post_init__(self):
         if self.n_kv_heads is None:
@@ -29,6 +30,8 @@ class ModelConfig:
         self.position_embedding = _validate_model_position_embedding(self.position_embedding)
         if self.rope_base <= 0:
             raise ValueError(f"model.rope_base must be positive, got {self.rope_base}")
+        if self.byte_patch_size <= 0:
+            raise ValueError(f"model.byte_patch_size must be positive, got {self.byte_patch_size}")
 
 
 @dataclass

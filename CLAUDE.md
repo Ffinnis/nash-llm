@@ -28,13 +28,13 @@ uv run python scripts/prepare_data.py --dataset fineweb_1B
 uv run python scripts/prepare_data.py --dataset fineweb_2_5B
 
 # Train
-# pretrain_small.yaml: 100M model on 10M-byte dataset (byte-budgeted)
+# pretrain_small.yaml: 88.6M patched byte-level model on 10M GPT2-token-equivalent data
 uv run python scripts/train.py --config configs/pretrain_small.yaml
-# pretrain_100m.yaml: same model on 100M-byte dataset (byte-budgeted)
+# pretrain_100m.yaml: same model on 100M GPT2-token-equivalent data
 uv run python scripts/train.py --config configs/pretrain_100m.yaml
-# pretrain_1b.yaml: 124M model on 1B-byte fineweb dataset (byte-budgeted)
+# pretrain_1b.yaml: 88.6M patched byte-level model on 1B GPT2-token-equivalent fineweb data
 uv run python scripts/train.py --config configs/pretrain_1b.yaml
-# pretrain_chinchilla.yaml: 124M model on 2.5B bytes
+# pretrain_chinchilla.yaml: 88.6M patched byte-level model on 2.5B GPT2-token-equivalent data
 uv run python scripts/train.py --config configs/pretrain_chinchilla.yaml
 # pretrain_debug.yaml: tiny debug preset
 uv run python scripts/train.py --config configs/pretrain_debug.yaml
@@ -62,7 +62,7 @@ uv run python scripts/compare_runs.py --run_ids <id1> <id2>
 
 ### Model
 
-Decoder-only GPT with pre-RMSNorm, GELU activation, and weight tying (`lm_head.weight = token_emb.weight`). The 100M config is 12 layers, 12 heads, 768 d_model (124M params). The causal mask is registered as a buffer in `MultiHeadAttention`.
+Decoder-only GPT with pre-RMSNorm, GELU activation, and weight tying (`lm_head.weight = token_emb.weight`) when `byte_patch_size=1`. The patched byte-level default config is 12 layers, 12 heads, 768 d_model, `vocab_size=259`, `byte_patch_size=4`, and 88,602,624 params. The causal mask is registered as a buffer in `MultiHeadAttention`.
 
 `GPT.forward(idx, targets)` returns logits when targets is None, or `(logits, loss)` when targets are provided.
 

@@ -17,6 +17,7 @@ class TestModelConfig:
         assert cfg.activation == "swiglu"
         assert cfg.position_embedding == "rope"
         assert cfg.rope_base == 10_000.0
+        assert cfg.byte_patch_size == 1
 
     def test_custom_values(self):
         cfg = ModelConfig(n_layers=6, d_model=512, activation="gelu", position_embedding="learned")
@@ -42,6 +43,10 @@ class TestModelConfig:
     def test_invalid_position_embedding_rejected_on_init(self):
         with pytest.raises(ValueError, match="Unsupported model.position_embedding"):
             ModelConfig(position_embedding="sinusoidal")
+
+    def test_invalid_byte_patch_size_rejected_on_init(self):
+        with pytest.raises(ValueError, match="model.byte_patch_size must be positive"):
+            ModelConfig(byte_patch_size=0)
 
 
 class TestTrainConfig:

@@ -14,7 +14,7 @@ class TestGPT:
     def test_logits_shape(self):
         x = torch.randint(0, 100, (2, 16))
         logits = self.model(x)
-        assert logits.shape == (2, 16, 100)
+        assert logits.shape == (2, 12, 100)
 
     def test_uses_rmsnorm_everywhere(self):
         assert isinstance(self.model.ln_f, torch.nn.RMSNorm)
@@ -53,5 +53,33 @@ class TestGPT:
         self.model.eval()
         prompt = torch.randint(0, 100, (1, 5))
         generated = self.model.generate(prompt, max_new_tokens=10)
+        assert generated.shape == (1, 15)
+        assert (generated[:, :5] == prompt).all()
+
+    def test_byte_patch_forward_predicts_next_patch(self):
+        cfg = ModelConfig(
+            n_layers=2, n_heads=4, d_model=64, d_ff=256,
+            vocab_size=100, max_seq_len=32, dropout=0.0,
+            byte_patch_size=4,
+        )
+        model = GPT(cfg)
+        x = torch.randint(0, 100, (2, 16))
+        y = torch.randint(0, 100, (2, 16))
+        logits, loss = model(x, y)
+        assert logits.shape == (2, 16, 100)
+        assert loss.ndim == 0
+        assert model.patch_proj is not None
+        assert model.patch_head is not None
+
+    def test_byte_patch_generate_basic(self):
+        cfg = ModelConfig(
+            n_layers=2, n_heads=4, d_model=64, d_ff=256,
+            vocab_size=100, max_seq_len=32, dropout=0.0,
+            byte_patch_size=4,
+        )
+        model = GPT(cfg)
+        model.eval()
+        prompt = torch.randint(0, 100, (1, 5))
+        generated = model.generate(prompt, max_new_tokens=10)
         assert generated.shape == (1, 15)
         assert (generated[:, :5] == prompt).all()

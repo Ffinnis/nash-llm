@@ -6,6 +6,7 @@ model:
   vocab_size: 259
   max_seq_len: 1024
   dropout: 0.1
+  byte_patch_size: 4
 
 train:
   batch_size: 8

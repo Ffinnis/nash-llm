@@ -42,7 +42,13 @@ def main():
     load_checkpoint(args.checkpoint, model)
 
     data_dir = args.data_dir or config.data.tokenized_dir
-    val_dataset = PretrainDataset(data_dir, split="val", seq_len=config.model.max_seq_len)
+    val_dataset = PretrainDataset(
+        data_dir,
+        split="val",
+        seq_len=config.model.max_seq_len,
+        expected_vocab_size=config.model.vocab_size,
+        expected_representation=config.data.representation,
+    )
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size)
 
     max_batches = _resolve_max_batches(args.max_batches)
@@ -55,6 +61,8 @@ def main():
     print(f"val_loss:    {val_loss:.4f}")
     print(f"accuracy:    {accuracy:.4f}")
     print(f"perplexity:  {perplexity:.2f}")
+    if config.data.representation == "bytes":
+        print(f"bits/byte:   {val_loss / math.log(2):.4f}")
 
 if __name__ == "__main__":
     main()

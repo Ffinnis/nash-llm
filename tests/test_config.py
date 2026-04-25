@@ -11,7 +11,7 @@ class TestModelConfig:
         assert cfg.n_kv_heads == 12
         assert cfg.d_model == 768
         assert cfg.d_ff == 3072
-        assert cfg.vocab_size == 50257
+        assert cfg.vocab_size == 259
         assert cfg.max_seq_len == 1024
         assert cfg.dropout == 0.1
         assert cfg.activation == "swiglu"
@@ -76,7 +76,9 @@ class TestDataConfig:
         cfg = DataConfig()
         assert cfg.dataset == "openwebtext"
         assert cfg.dataset_size == "100M"
-        assert cfg.tokenized_dir == "datasets/tokenized"
+        assert cfg.tokenized_dir == "datasets/bytes"
+        assert cfg.representation == "bytes"
+        assert cfg.token_dtype == "auto"
 
 
 class TestMetricsConfig:
@@ -192,6 +194,14 @@ class TestLoadConfig:
         yaml_path.write_text(yaml.dump(yaml_content))
         with pytest.raises(ValueError, match="Unsupported model.position_embedding"):
             load_config(str(yaml_path))
+
+    def test_invalid_data_representation_override_raises(self):
+        with pytest.raises(ValueError, match="Unsupported data.representation"):
+            load_config(config_path=None, overrides={"representation": "sentencepiece"})
+
+    def test_invalid_data_token_dtype_override_raises(self):
+        with pytest.raises(ValueError, match="Unsupported data.token_dtype"):
+            load_config(config_path=None, overrides={"token_dtype": "int64"})
 
     def test_muon_lr_yaml(self, tmp_path):
         yaml_content = {"train": {"muon_lr": 0.03}}

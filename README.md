@@ -84,10 +84,10 @@ Smallest/easiest first run:
 uv run python scripts/prepare_data.py --dataset tinystories_10M
 ```
 
-This writes tokenized shards under:
+This writes byte-encoded shards under:
 
 ```text
-datasets/tokenized/tinystories_10M/
+datasets/bytes/tinystories_10M/
 ```
 
 Available dataset prep commands:
@@ -166,7 +166,7 @@ uv run python scripts/generate.py \
 ```bash
 uv run python scripts/evaluate.py \
   --checkpoint checkpoints/best.pt \
-  --data_dir datasets/tokenized/tinystories_10M
+  --data_dir datasets/bytes/tinystories_10M
 ```
 
 ### 15. Run training in the background
@@ -229,7 +229,7 @@ uv run python scripts/generate.py --checkpoint checkpoints/best.pt --prompt "The
 ### Evaluate
 
 ```bash
-uv run python scripts/evaluate.py --checkpoint checkpoints/best.pt --data_dir datasets/tokenized/tinystories_10M
+uv run python scripts/evaluate.py --checkpoint checkpoints/best.pt --data_dir datasets/bytes/tinystories_10M
 ```
 
 ### Plot / compare wandb runs
@@ -264,7 +264,8 @@ configs/
 
 ## Notes
 
-- Tokenizer: GPT-2 via `tiktoken` (`vocab_size=50257`)
-- Tokenized datasets are written under `datasets/`
+- Representation: tokenizer-free UTF-8 bytes by default (`vocab_size=259`: 256 byte ids plus EOS/PAD/BOS)
+- Legacy GPT-2 `tiktoken` is still available with `--representation tiktoken`
+- Encoded datasets are written under `datasets/`
 - Checkpoints are written under `checkpoints/`
 - Mixed precision supports `bf16` and `fp16`

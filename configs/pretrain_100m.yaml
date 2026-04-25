@@ -3,7 +3,7 @@ model:
   n_heads: 12
   d_model: 768
   d_ff: 3072
-  vocab_size: 50257
+  vocab_size: 259
   max_seq_len: 1024
   dropout: 0.1
 
@@ -27,7 +27,9 @@ train:
 data:
   dataset: openwebtext
   dataset_size: 100M
-  tokenized_dir: datasets/tokenized/openwebtext_100M
+  tokenized_dir: datasets/bytes/openwebtext_100M
+  representation: bytes
+  token_dtype: auto
 
 metrics:
   wandb_project: nash-llm
@@ -38,3 +40,4 @@ metrics:
   metrics:
     - val_loss
     - accuracy
+    - bits_per_byte

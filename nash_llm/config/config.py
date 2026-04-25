@@ -9,7 +9,7 @@ class ModelConfig:
     n_kv_heads: int | None = None
     d_model: int = 768
     d_ff: int = 3072
-    vocab_size: int = 50257
+    vocab_size: int = 259
     max_seq_len: int = 1024
     dropout: float = 0.1
     activation: str = "swiglu"
@@ -57,8 +57,15 @@ class TrainConfig:
 class DataConfig:
     dataset: str = "openwebtext"
     dataset_size: str = "100M"
-    tokenized_dir: str = "datasets/tokenized"
+    tokenized_dir: str = "datasets/bytes"
     num_workers: int = 4
+    representation: str = "bytes"
+    tokenizer_encoding: str = "gpt2"
+    token_dtype: str = "auto"
+
+    def __post_init__(self):
+        self.representation = _validate_data_representation(self.representation)
+        self.token_dtype = _validate_data_token_dtype(self.token_dtype)
 
 
 @dataclass
@@ -68,7 +75,7 @@ class MetricsConfig:
     log_interval: int = 10
     eval_max_batches: int = 20
     final_eval_max_batches: int = 0
-    metrics: list[str] = field(default_factory=lambda: ["val_loss", "accuracy"])
+    metrics: list[str] = field(default_factory=lambda: ["val_loss", "accuracy", "bits_per_byte"])
 
 
 @dataclass
@@ -126,6 +133,32 @@ def _validate_model_position_embedding(value: str) -> str:
     return position_embedding
 
 
+def _validate_data_representation(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(
+            f"Unsupported data.representation '{value}'. Expected one of: bytes, tiktoken"
+        )
+    representation = value.lower()
+    if representation not in {"bytes", "tiktoken"}:
+        raise ValueError(
+            f"Unsupported data.representation '{value}'. Expected one of: bytes, tiktoken"
+        )
+    return representation
+
+
+def _validate_data_token_dtype(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(
+            f"Unsupported data.token_dtype '{value}'. Expected one of: auto, uint8, uint16, uint32"
+        )
+    token_dtype = value.lower()
+    if token_dtype not in {"auto", "uint8", "uint16", "uint32"}:
+        raise ValueError(
+            f"Unsupported data.token_dtype '{value}'. Expected one of: auto, uint8, uint16, uint32"
+        )
+    return token_dtype
+
+
 def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
     original_n_heads = cfg.model.n_heads
     original_n_kv_heads = cfg.model.n_kv_heads
@@ -157,6 +190,10 @@ def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
             parsed = _validate_model_activation(str(parsed))
         if section_name == "model" and field_name == "position_embedding":
             parsed = _validate_model_position_embedding(str(parsed))
+        if section_name == "data" and field_name == "representation":
+            parsed = _validate_data_representation(str(parsed))
+        if section_name == "data" and field_name == "token_dtype":
+            parsed = _validate_data_token_dtype(str(parsed))
         if section_name == "model" and field_name == "n_kv_heads":
             explicit_n_kv_heads_override = True
         setattr(section, field_name, parsed)
@@ -169,6 +206,7 @@ def _apply_overrides(cfg: NashConfig, overrides: dict[str, str]) -> NashConfig:
         cfg.model.n_kv_heads = cfg.model.n_heads
 
     cfg.model = ModelConfig(**vars(cfg.model))
+    cfg.data = DataConfig(**vars(cfg.data))
     return cfg
 
 

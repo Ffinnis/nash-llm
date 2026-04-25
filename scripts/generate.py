@@ -21,7 +21,19 @@ def main():
     model = GPT(model_cfg).to(device)
     load_checkpoint(args.checkpoint, model)
     model.eval()
-    text = generate_text(model, prompt=args.prompt, max_new_tokens=args.max_tokens, temperature=args.temperature, top_k=args.top_k)
+    data_cfg = raw_ckpt["config"].get("data", {})
+    representation = data_cfg.get("representation")
+    if representation is None:
+        representation = "bytes" if model_cfg.vocab_size == 259 else "tiktoken"
+    text = generate_text(
+        model,
+        prompt=args.prompt,
+        max_new_tokens=args.max_tokens,
+        temperature=args.temperature,
+        top_k=args.top_k,
+        representation=representation,
+        tokenizer_encoding=data_cfg.get("tokenizer_encoding", "gpt2"),
+    )
     print(text)
 
 if __name__ == "__main__":

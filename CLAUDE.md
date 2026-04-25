@@ -21,20 +21,20 @@ uv run pytest tests/test_transformer.py
 # Run a specific test
 uv run pytest tests/test_transformer.py::test_gpt_forward -v
 
-# Prepare data (tokenize dataset into binary shards)
+# Prepare data (encode UTF-8 byte streams into binary shards)
 uv run python scripts/prepare_data.py --dataset tinystories_10M
 uv run python scripts/prepare_data.py --dataset openwebtext_100M
 uv run python scripts/prepare_data.py --dataset fineweb_1B
 uv run python scripts/prepare_data.py --dataset fineweb_2_5B
 
 # Train
-# pretrain_small.yaml: 100M model on 10M-token dataset (token-budgeted)
+# pretrain_small.yaml: 100M model on 10M-byte dataset (byte-budgeted)
 uv run python scripts/train.py --config configs/pretrain_small.yaml
-# pretrain_100m.yaml: same model on 100M-token dataset (token-budgeted)
+# pretrain_100m.yaml: same model on 100M-byte dataset (byte-budgeted)
 uv run python scripts/train.py --config configs/pretrain_100m.yaml
-# pretrain_1b.yaml: 124M model on 1B-token fineweb dataset (token-budgeted)
+# pretrain_1b.yaml: 124M model on 1B-byte fineweb dataset (byte-budgeted)
 uv run python scripts/train.py --config configs/pretrain_1b.yaml
-# pretrain_chinchilla.yaml: 124M model on 2.5B tokens (Chinchilla-optimal 20:1 ratio)
+# pretrain_chinchilla.yaml: 124M model on 2.5B bytes
 uv run python scripts/train.py --config configs/pretrain_chinchilla.yaml
 # pretrain_debug.yaml: tiny debug preset
 uv run python scripts/train.py --config configs/pretrain_debug.yaml
@@ -47,7 +47,7 @@ uv run python scripts/train.py --config configs/pretrain_small.yaml --muon_lr 0.
 uv run python scripts/generate.py --checkpoint checkpoints/best.pt --prompt "Once upon a time"
 
 # Evaluate checkpoint
-uv run python scripts/evaluate.py --checkpoint checkpoints/best.pt --data_dir datasets/tokenized/tinystories_10M
+uv run python scripts/evaluate.py --checkpoint checkpoints/best.pt --data_dir datasets/bytes/tinystories_10M
 
 # Plot metrics / compare runs (wandb)
 uv run python scripts/plot_metrics.py --run_id <wandb_run_id>
@@ -68,7 +68,7 @@ Decoder-only GPT with pre-RMSNorm, GELU activation, and weight tying (`lm_head.w
 
 ### Data pipeline
 
-`scripts/prepare_data.py` downloads from HuggingFace, tokenizes with GPT-2 tiktoken, and writes numpy uint16 binary shards to `datasets/tokenized/<name>/`. `PretrainDataset` uses `np.memmap` to load shards and serves `(x, y)` pairs of `seq_len` tokens. `SFTDataset` reads JSONL with `{"prompt", "completion"}` fields and returns `(input_ids, targets, loss_mask)` where `loss_mask` masks out the prompt portion.
+`scripts/prepare_data.py` downloads from HuggingFace, encodes raw UTF-8 bytes by default, appends byte-level EOS, and writes numpy binary shards to `datasets/bytes/<name>/`. `PretrainDataset` uses `np.memmap` to load shards with the dtype recorded in `meta.json` and serves `(x, y)` pairs of `seq_len` ids. Legacy GPT-2 tiktoken encoding is still available with `data.representation=tiktoken` / `--representation tiktoken`. `SFTDataset` reads JSONL with `{"prompt", "completion"}` fields and returns `(input_ids, targets, loss_mask)` where `loss_mask` masks out the prompt portion.
 
 ### Training
 
@@ -82,7 +82,7 @@ Decoder-only GPT with pre-RMSNorm, GELU activation, and weight tying (`lm_head.w
 
 ### Key conventions
 
-- Tokenizer: GPT-2 via tiktoken (vocab_size=50257)
+- Representation: tokenizer-free UTF-8 bytes by default (vocab_size=259: 256 byte ids plus EOS/PAD/BOS)
 - Data storage: `datasets/` (gitignored), checkpoints in `checkpoints/` (gitignored)
 - Metrics: wandb (configurable via `metrics.wandb_enabled`)
 - Package manager: **uv** (not pip) — uses `[dependency-groups]` in pyproject.toml

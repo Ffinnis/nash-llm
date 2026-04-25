@@ -3,8 +3,19 @@ import torch.nn as nn
 from nash_llm.data.tokenizer import Tokenizer
 
 
-def generate_text(model: nn.Module, prompt: str, max_new_tokens: int = 100, temperature: float = 1.0, top_k: int | None = None) -> str:
-    tokenizer = Tokenizer()
+def generate_text(
+    model: nn.Module,
+    prompt: str,
+    max_new_tokens: int = 100,
+    temperature: float = 1.0,
+    top_k: int | None = None,
+    representation: str = "bytes",
+    tokenizer_encoding: str = "gpt2",
+) -> str:
+    tokenizer = Tokenizer(
+        representation=representation,
+        encoding_name=tokenizer_encoding,
+    )
     device = next(model.parameters()).device
     tokens = tokenizer.encode(prompt)
     idx = torch.tensor([tokens], dtype=torch.long, device=device)

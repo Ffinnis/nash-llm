@@ -5,9 +5,18 @@ from nash_llm.data.tokenizer import Tokenizer
 
 
 class SFTDataset(Dataset):
-    def __init__(self, jsonl_path: str, max_seq_len: int):
+    def __init__(
+        self,
+        jsonl_path: str,
+        max_seq_len: int,
+        representation: str = "bytes",
+        tokenizer_encoding: str = "gpt2",
+    ):
         self.max_seq_len = max_seq_len
-        self.tokenizer = Tokenizer()
+        self.tokenizer = Tokenizer(
+            representation=representation,
+            encoding_name=tokenizer_encoding,
+        )
         self.samples = []
         with open(jsonl_path) as f:
             for line in f:
@@ -32,8 +41,9 @@ class SFTDataset(Dataset):
         loss_mask = [False] * prompt_len + [True] * (seq_len - prompt_len)
 
         pad_len = self.max_seq_len - seq_len
-        input_ids = full_ids + [0] * pad_len
-        targets = full_ids[1:] + [0] * (pad_len + 1)
+        pad = self.tokenizer.pad_token
+        input_ids = full_ids + [pad] * pad_len
+        targets = full_ids[1:] + [pad] * (pad_len + 1)
         targets = targets[: self.max_seq_len]
         loss_mask = loss_mask + [False] * pad_len
 

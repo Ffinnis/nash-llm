@@ -95,8 +95,22 @@ class Trainer:
             warmup_steps=scheduler_warmup_steps, max_steps=self.train_max_steps,
         )
 
-        self.train_dataset = PretrainDataset(config.data.tokenized_dir, split="train", seq_len=config.model.max_seq_len)
-        self.val_dataset = PretrainDataset(config.data.tokenized_dir, split="val", seq_len=config.model.max_seq_len)
+        dataset_kwargs = {
+            "expected_vocab_size": config.model.vocab_size,
+            "expected_representation": config.data.representation,
+        }
+        self.train_dataset = PretrainDataset(
+            config.data.tokenized_dir,
+            split="train",
+            seq_len=config.model.max_seq_len,
+            **dataset_kwargs,
+        )
+        self.val_dataset = PretrainDataset(
+            config.data.tokenized_dir,
+            split="val",
+            seq_len=config.model.max_seq_len,
+            **dataset_kwargs,
+        )
         loader_workers = max(int(config.data.num_workers), 0)
         self.pin_memory = self.device.type == "cuda"
         train_loader_kwargs: dict[str, Any] = {
@@ -155,7 +169,10 @@ class Trainer:
         accuracy = compute_accuracy(self.model, self.val_loader, max_batches=max_batches)
         perplexity = math.exp(val_loss) if val_loss < 20 else float("inf")
         self.model.train()
-        return {"val_loss": val_loss, "accuracy": accuracy, "perplexity": perplexity}
+        metrics = {"val_loss": val_loss, "accuracy": accuracy, "perplexity": perplexity}
+        if self.config.data.representation == "bytes":
+            metrics["bits_per_byte"] = val_loss / math.log(2)
+        return metrics
 
     @staticmethod
     def _progress_bar(progress: float, width: int = 30) -> str:
@@ -314,6 +331,8 @@ class Trainer:
                 "final_accuracy": final_metrics["accuracy"],
                 "final_perplexity": final_metrics["perplexity"],
             }
+            if "bits_per_byte" in final_metrics:
+                final_record["final_bits_per_byte"] = final_metrics["bits_per_byte"]
             history[-1].update(final_record)
             self.logger.log(final_record, step=history[-1]["step"])
 

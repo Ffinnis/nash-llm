@@ -18,7 +18,11 @@ class TestTokenizer:
         assert decoded == text
 
     def test_vocab_size(self):
-        assert self.tok.vocab_size == 50257
+        assert self.tok.vocab_size == 259
 
     def test_eot_token(self):
         assert isinstance(self.tok.eot_token, int)
+
+    def test_tiktoken_gpt2_still_available(self):
+        tok = Tokenizer(representation="tiktoken")
+        assert tok.vocab_size == 50257

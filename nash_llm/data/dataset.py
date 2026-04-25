@@ -3,12 +3,34 @@ import torch
 from torch.utils.data import Dataset
 from pathlib import Path
 from bisect import bisect_right
+import json
+
+
+TOKEN_DTYPES = {
+    "uint8": np.uint8,
+    "uint16": np.uint16,
+    "uint32": np.uint32,
+}
 
 
 class PretrainDataset(Dataset):
-    def __init__(self, data_dir: str, split: str, seq_len: int):
+    def __init__(
+        self,
+        data_dir: str,
+        split: str,
+        seq_len: int,
+        expected_vocab_size: int | None = None,
+        expected_representation: str | None = None,
+    ):
         self.seq_len = seq_len
         data_path = Path(data_dir)
+        self.meta = self._load_meta(data_path)
+        self.token_dtype = self._resolve_token_dtype(self.meta)
+        self._validate_meta(
+            data_dir=data_dir,
+            expected_vocab_size=expected_vocab_size,
+            expected_representation=expected_representation,
+        )
 
         shard_files = sorted(data_path.glob(f"{split}_*.bin"))
         if not shard_files:
@@ -18,7 +40,7 @@ class PretrainDataset(Dataset):
         self.shard_ends: list[int] = []
         total_tokens = 0
         for shard in shard_files:
-            arr = np.memmap(str(shard), dtype=np.uint16, mode="r")
+            arr = np.memmap(str(shard), dtype=self.token_dtype, mode="r")
             self.shards.append(arr)
             total_tokens += len(arr)
             self.shard_ends.append(total_tokens)
@@ -37,7 +59,7 @@ class PretrainDataset(Dataset):
         if offset < 0 or length < 0 or offset + length > self.n_tokens:
             raise IndexError("token window is out of bounds")
 
-        out = np.empty(length, dtype=np.uint16)
+        out = np.empty(length, dtype=self.token_dtype)
         out_pos = 0
         shard_idx = bisect_right(self.shard_ends, offset)
         shard_start = self.shard_ends[shard_idx - 1] if shard_idx > 0 else 0
@@ -52,3 +74,41 @@ class PretrainDataset(Dataset):
             local_offset = 0
 
         return out
+
+    @staticmethod
+    def _load_meta(data_path: Path) -> dict:
+        meta_path = data_path / "meta.json"
+        if not meta_path.exists():
+            return {}
+        return json.loads(meta_path.read_text())
+
+    @staticmethod
+    def _resolve_token_dtype(meta: dict) -> np.dtype:
+        dtype_name = meta.get("token_dtype", "uint16")
+        if dtype_name not in TOKEN_DTYPES:
+            raise ValueError(
+                f"Unsupported token dtype '{dtype_name}' in dataset metadata. "
+                f"Expected one of: {', '.join(TOKEN_DTYPES)}"
+            )
+        return np.dtype(TOKEN_DTYPES[dtype_name])
+
+    def _validate_meta(
+        self,
+        data_dir: str,
+        expected_vocab_size: int | None,
+        expected_representation: str | None,
+    ) -> None:
+        if expected_vocab_size is not None and "vocab_size" in self.meta:
+            actual_vocab_size = int(self.meta["vocab_size"])
+            if actual_vocab_size != expected_vocab_size:
+                raise ValueError(
+                    f"Dataset vocab_size mismatch for {data_dir}: "
+                    f"metadata has {actual_vocab_size}, config expects {expected_vocab_size}."
+                )
+        if expected_representation is not None and "representation" in self.meta:
+            actual_representation = str(self.meta["representation"])
+            if actual_representation != expected_representation:
+                raise ValueError(
+                    f"Dataset representation mismatch for {data_dir}: "
+                    f"metadata has {actual_representation}, config expects {expected_representation}."
+                )

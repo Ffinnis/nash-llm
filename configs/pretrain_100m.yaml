@@ -12,8 +12,8 @@ train:
   learning_rate: 7.0e-4
   weight_decay: 0.1
   max_steps: 100000
-  max_tokens: 400000000
-  warmup_steps: 160
+  max_tokens: 440555992
+  warmup_steps: 176
   grad_clip: 1.0
   eval_interval: 400
   checkpoint_interval: 800

@@ -1,13 +1,15 @@
 """Download and encode a dataset into binary shards for pretraining."""
 import argparse
 import json
+import os
 import numpy as np
+import sys
 from pathlib import Path
 from nash_llm.data.tokenizer import Tokenizer
 
 DATASET_CONFIGS = {
     "tinystories_10M": {"hf_path": "roneneldan/TinyStories", "split": "train", "max_tokens": 40_000_000},
-    "openwebtext_100M": {"hf_path": "Skylion007/openwebtext", "split": "train", "max_tokens": 400_000_000},
+    "openwebtext_100M": {"hf_path": "Skylion007/openwebtext", "split": "train", "max_tokens": 440_555_992},
     "fineweb_1B": {"hf_path": "HuggingFaceFW/fineweb-edu", "name": "sample-10BT", "split": "train", "max_tokens": 4_000_000_000},
     "fineweb_2_5B": {"hf_path": "HuggingFaceFW/fineweb-edu", "name": "sample-10BT", "split": "train", "max_tokens": 10_000_000_000},
 }
@@ -154,7 +156,9 @@ def main():
     args = parser.parse_args()
     if args.calibrate:
         calibrate_dataset(args.dataset, args.calibrate_docs, args.calibrate_gpt_tokens)
-        return
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
     tokenize_dataset(
         args.dataset,
         args.output,

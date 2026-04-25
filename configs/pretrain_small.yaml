@@ -12,11 +12,11 @@ train:
   learning_rate: 7.0e-4
   weight_decay: 0.1
   max_steps: 100000
-  max_tokens: 10000000
-  warmup_steps: 4
+  max_tokens: 40000000
+  warmup_steps: 16
   grad_clip: 1.0
-  eval_interval: 10
-  checkpoint_interval: 20
+  eval_interval: 40
+  checkpoint_interval: 80
   grad_accum_steps: 4
   compile: true
   precision: bf16

@@ -48,11 +48,9 @@ class GPT(nn.Module):
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         self.patch_head = None
         if self.byte_patch_size > 1:
-            self.patch_head = nn.Linear(
-                config.d_model,
-                config.vocab_size * self.byte_patch_size,
-                bias=False,
-            )
+            self.patch_byte_pos_emb = nn.Embedding(self.byte_patch_size, config.d_model)
+            self.local_byte_proj = nn.Linear(config.d_model * 2, config.d_model)
+            self.patch_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         else:
             self.lm_head.weight = self.token_emb.weight
 
@@ -120,7 +118,7 @@ class GPT(nn.Module):
                     f"byte_patch_size={P} requires at least {2 * P - 1} byte ids for training"
                 )
             input_patches = sequence[:, : (n_patches - 1) * P].reshape(B, n_patches - 1, P)
-            target_patches = sequence[:, P : n_patches * P].reshape(B, (n_patches - 1) * P)
+            target_patches = sequence[:, P : n_patches * P].reshape(B, n_patches - 1, P)
         else:
             n_patches = T // P
             if n_patches < 1:
@@ -131,7 +129,7 @@ class GPT(nn.Module):
         patch_emb = self.token_emb(input_patches).reshape(B, input_patches.size(1), P * self.config.d_model)
         x = self.patch_proj(patch_emb)
         x = self._run_blocks(x)
-        logits = self.patch_head(x).view(B, input_patches.size(1) * P, self.config.vocab_size)
+        logits = self._decode_patch_bytes(x, target_patches)
 
         if target_patches is None:
             return logits
@@ -141,6 +139,29 @@ class GPT(nn.Module):
             target_patches.reshape(-1),
         )
         return logits, loss
+
+    def _decode_patch_bytes(
+        self,
+        patch_states: torch.Tensor,
+        target_patches: torch.Tensor | None,
+    ) -> torch.Tensor:
+        assert self.patch_head is not None
+        assert self.local_byte_proj is not None
+        B, N, C = patch_states.shape
+        P = self.byte_patch_size
+        if target_patches is None:
+            prev_tokens = torch.zeros((B, N, P), dtype=torch.long, device=patch_states.device)
+        else:
+            bos = torch.zeros((B, N, 1), dtype=torch.long, device=target_patches.device)
+            prev_tokens = torch.cat([bos, target_patches[:, :, :-1]], dim=2)
+
+        prev_emb = self.token_emb(prev_tokens)
+        positions = torch.arange(P, device=patch_states.device)
+        prev_emb = prev_emb + self.patch_byte_pos_emb(positions).view(1, 1, P, C)
+        patch_context = patch_states.unsqueeze(2).expand(B, N, P, C)
+        local_hidden = self.local_byte_proj(torch.cat([patch_context, prev_emb], dim=-1))
+        logits = self.patch_head(local_hidden)
+        return logits.reshape(B, N * P, self.config.vocab_size)
 
     @torch.no_grad()
     def generate(self, idx: torch.Tensor, max_new_tokens: int, temperature: float = 1.0, top_k: int | None = None) -> torch.Tensor:
@@ -184,18 +205,19 @@ class GPT(nn.Module):
             if trim:
                 idx_cond = idx_cond[:, trim:]
             logits = self(idx_cond)
-            next_patch_logits = logits[:, -P:, :] / temperature
-            if top_k is not None:
-                v, _ = torch.topk(next_patch_logits, min(top_k, next_patch_logits.size(-1)))
-                next_patch_logits = next_patch_logits.masked_fill(
-                    next_patch_logits < v[:, :, [-1]],
-                    float("-inf"),
-                )
-            probs = torch.softmax(next_patch_logits, dim=-1)
-            next_patch = torch.multinomial(
-                probs.reshape(-1, probs.size(-1)),
-                num_samples=1,
-            ).view(idx.size(0), P)
+            next_patch = []
+            for local_index in range(P):
+                token_logits = logits[:, -P + local_index, :] / temperature
+                if top_k is not None:
+                    v, _ = torch.topk(token_logits, min(top_k, token_logits.size(-1)))
+                    token_logits = token_logits.masked_fill(
+                        token_logits < v[:, [-1]],
+                        float("-inf"),
+                    )
+                probs = torch.softmax(token_logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+                next_patch.append(next_token)
+            next_patch = torch.cat(next_patch, dim=-1)
             idx = torch.cat([idx, next_patch], dim=-1)
 
         generated = idx[:, original_len + pad_len : original_len + pad_len + max_new_tokens]
